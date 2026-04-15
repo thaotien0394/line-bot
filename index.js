@@ -6,33 +6,37 @@ app.use(express.json());
 
 // 🔐 ENV
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-if (!CHANNEL_ACCESS_TOKEN || !GEMINI_API_KEY) {
+if (!CHANNEL_ACCESS_TOKEN || !DEEPSEEK_API_KEY) {
   console.error("❌ Thiếu ENV!");
 }
 
-// 🧠 Gọi Gemini (đã fix đúng API + model)
-async function askGemini(prompt) {
+// 🧠 Gọi DeepSeek (giống OpenAI)
+async function askAI(prompt) {
   try {
     const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      "https://api.deepseek.com/v1/chat/completions",
       {
-        contents: [
+        model: "deepseek-chat",
+        messages: [
           {
-            parts: [
-              {
-                text: `Trả lời ngắn gọn, dễ hiểu bằng tiếng Việt:\n${prompt}`,
-              },
-            ],
+            role: "user",
+            content: `Trả lời ngắn gọn bằng tiếng Việt:\n${prompt}`,
           },
         ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+          "Content-Type": "application/json",
+        },
       }
     );
 
-    return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "Không có phản hồi 😢";
+    return res.data.choices?.[0]?.message?.content || "Không có phản hồi 😢";
   } catch (err) {
-    console.error("❌ Gemini error:", err.response?.data || err.message);
+    console.error("❌ DeepSeek error:", err.response?.data || err.message);
     return "AI đang bận 😢";
   }
 }
@@ -51,9 +55,9 @@ app.post("/webhook", async (req, res) => {
           console.log("📩 User:", userMessage);
 
           // 🛑 chống spam nhẹ
-          await new Promise((r) => setTimeout(r, 800));
+          await new Promise((r) => setTimeout(r, 500));
 
-          const replyText = await askGemini(userMessage);
+          const replyText = await askAI(userMessage);
 
           await axios.post(
             "https://api.line.me/v2/bot/message/reply",
@@ -62,7 +66,7 @@ app.post("/webhook", async (req, res) => {
               messages: [
                 {
                   type: "text",
-                  text: replyText.substring(0, 1000), // tránh quá dài lỗi LINE
+                  text: replyText.substring(0, 1000),
                 },
               ],
             },
@@ -83,9 +87,9 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// 🌐 Route test
+// 🌐 Test server
 app.get("/", (req, res) => {
-  res.send("✅ Gemini LINE Bot đang chạy!");
+  res.send("✅ DeepSeek LINE Bot đang chạy!");
 });
 
 // 🚀 Start server
