@@ -8,11 +8,12 @@ app.use(express.json());
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
+// ❗ Kiểm tra ENV ngay khi start
 if (!CHANNEL_ACCESS_TOKEN || !DEEPSEEK_API_KEY) {
-  console.error("❌ Thiếu ENV!");
+  console.error("❌ Thiếu ENV! Kiểm tra Railway Variables");
 }
 
-// 🧠 Gọi DeepSeek (giống OpenAI)
+// 🧠 Gọi DeepSeek (an toàn, chống crash)
 async function askAI(prompt) {
   try {
     const res = await axios.post(
@@ -31,10 +32,11 @@ async function askAI(prompt) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
+        timeout: 10000, // tránh treo
       }
     );
 
-    return res.data.choices?.[0]?.message?.content || "Không có phản hồi 😢";
+    return res.data?.choices?.[0]?.message?.content || "Không có phản hồi 😢";
   } catch (err) {
     console.error("❌ DeepSeek error:", err.response?.data || err.message);
     return "AI đang bận 😢";
@@ -66,7 +68,7 @@ app.post("/webhook", async (req, res) => {
               messages: [
                 {
                   type: "text",
-                  text: replyText.substring(0, 1000),
+                  text: replyText.substring(0, 1000), // tránh lỗi LINE
                 },
               ],
             },
@@ -75,6 +77,7 @@ app.post("/webhook", async (req, res) => {
                 Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
                 "Content-Type": "application/json",
               },
+              timeout: 10000,
             }
           );
         }
@@ -87,7 +90,7 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// 🌐 Test server
+// 🌐 Route test
 app.get("/", (req, res) => {
   res.send("✅ DeepSeek LINE Bot đang chạy!");
 });
@@ -96,4 +99,13 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+});
+
+// 🛡️ Chống crash toàn server
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled Rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
 });
