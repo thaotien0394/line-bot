@@ -38,7 +38,7 @@ async function askAI(prompt) {
     return res.data?.choices?.[0]?.message?.content || "Không có phản hồi 😢";
   } catch (err) {
     console.error("❌ DeepSeek error:", err.response?.data || err.message);
-    return "AI lỗi 😢";
+    return "AI nghèo lắm nên không chạy được 😢. Gõ Key để lấy lại từ khóa mặc định";
   }
 }
 
