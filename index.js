@@ -1,65 +1,85 @@
 const express = require("express");
 const axios = require("axios");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
 
-// 🔐 lấy từ ENV (KHÔNG ghi trực tiếp)
+// 🔐 ENV
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+if (!CHANNEL_ACCESS_TOKEN || !GEMINI_API_KEY) {
+  console.error("❌ Thiếu ENV!");
+}
 
-async function askGPT(prompt) {
+// 🧠 Gọi Gemini FREE
+async function askGemini(prompt) {
   try {
-    const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "user",
-          content: `Trả lời tiếng Việt ngắn gọn:\n${prompt}`,
-        },
-      ],
-    });
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              {
+                text: `Trả lời ngắn gọn, dễ hiểu bằng tiếng Việt:\n${prompt}`,
+              },
+            ],
+          },
+        ],
+      }
+    );
 
-    return res.choices[0].message.content;
+    return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "Không có phản hồi 😢";
   } catch (err) {
-    console.error("GPT error:", err.message);
-    return "AI đang lỗi 😢";
+    console.error("Gemini error:", err.response?.data || err.message);
+    return "AI đang bận 😢";
   }
 }
 
+// 📩 Webhook LINE
 app.post("/webhook", async (req, res) => {
   const events = req.body.events || [];
 
-  for (let event of events) {
-    if (event.type === "message" && event.message.type === "text") {
-      const replyToken = event.replyToken;
-      const userMessage = event.message.text;
+  await Promise.all(
+    events.map(async (event) => {
+      if (event.type === "message" && event.message.type === "text") {
+        const replyToken = event.replyToken;
+        const userMessage = event.message.text;
 
-      const replyText = await askGPT(userMessage);
+        console.log("📩 User:", userMessage);
 
-      await axios.post(
-        "https://api.line.me/v2/bot/message/reply",
-        {
-          replyToken,
-          messages: [{ type: "text", text: replyText }],
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
+        // 🛑 chống spam (delay 1s)
+        await new Promise((r) => setTimeout(r, 1000));
+
+        const replyText = await askGemini(userMessage);
+
+        await axios.post(
+          "https://api.line.me/v2/bot/message/reply",
+          {
+            replyToken,
+            messages: [{ type: "text", text: replyText }],
           },
-        }
-      );
-    }
-  }
+          {
+            headers: {
+              Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      }
+    })
+  );
 
   res.sendStatus(200);
 });
 
+// 🌐 Test server
+app.get("/", (req, res) => {
+  res.send("✅ Gemini LINE Bot đang chạy!");
+});
+
+// 🚀 Start server
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running...");
 });
