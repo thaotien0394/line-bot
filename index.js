@@ -8,12 +8,11 @@ app.use(express.json());
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// ❗ Kiểm tra ENV ngay khi start
-if (!CHANNEL_ACCESS_TOKEN || !DEEPSEEK_API_KEY) {
-  console.error("❌ Thiếu ENV! Kiểm tra Railway Variables");
-}
+// 🔍 kiểm tra ENV
+console.log("CHANNEL_ACCESS_TOKEN:", CHANNEL_ACCESS_TOKEN ? "OK" : "MISSING");
+console.log("DEEPSEEK_API_KEY:", DEEPSEEK_API_KEY ? "OK" : "MISSING");
 
-// 🧠 Gọi DeepSeek (an toàn, chống crash)
+// 🧠 Gọi AI DeepSeek
 async function askAI(prompt) {
   try {
     const res = await axios.post(
@@ -32,14 +31,14 @@ async function askAI(prompt) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 10000, // tránh treo
+        timeout: 10000,
       }
     );
 
     return res.data?.choices?.[0]?.message?.content || "Không có phản hồi 😢";
   } catch (err) {
     console.error("❌ DeepSeek error:", err.response?.data || err.message);
-    return "AI đang bận 😢";
+    return "AI lỗi 😢";
   }
 }
 
@@ -56,7 +55,7 @@ app.post("/webhook", async (req, res) => {
 
           console.log("📩 User:", userMessage);
 
-          // 🛑 chống spam nhẹ
+          // chống spam nhẹ
           await new Promise((r) => setTimeout(r, 500));
 
           const replyText = await askAI(userMessage);
@@ -68,7 +67,7 @@ app.post("/webhook", async (req, res) => {
               messages: [
                 {
                   type: "text",
-                  text: replyText.substring(0, 1000), // tránh lỗi LINE
+                  text: replyText.substring(0, 1000),
                 },
               ],
             },
@@ -90,18 +89,18 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// 🌐 Route test
+// 🌐 test server
 app.get("/", (req, res) => {
   res.send("✅ DeepSeek LINE Bot đang chạy!");
 });
 
-// 🚀 Start server
+// 🚀 start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log("🚀 Server running on port " + PORT);
 });
 
-// 🛡️ Chống crash toàn server
+// 🛡️ chống crash
 process.on("unhandledRejection", (err) => {
   console.error("❌ Unhandled Rejection:", err);
 });
