@@ -106,7 +106,7 @@ async function replyLine(replyToken, text) {
     },
     {
       headers: {
-        Authorization: `Bearer ${z3BfktkVc/IK6DwdhU6C6OhMgLqBRZlehEQGppxWo8lIF/nINJ2Z2axlkLc4Hk8wmQJiQzefvseH4UedcsfSE6zqL2oVp8yH8XzvHkP2SalmlpfDYU0Pe24RjL7HUFottPdyvq9lgva16ugm1GKpiQdB04t89/1O/w1cDnyilFU=}`,
+       Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
         "Content-Type": "application/json",
       },
     }
