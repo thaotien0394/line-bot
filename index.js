@@ -5,60 +5,104 @@ const app = express();
 app.use(express.json());
 
 // ==========================
-// 🔐 CONFIG
+// 🔐 ENV
 // ==========================
 const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 📦 QUEUE SYSTEM
+// 🧠 MEMORY USER
+// ==========================
+let userMemory = {};
+
+// ==========================
+// 📦 QUEUE
 // ==========================
 let queue = [];
 let running = 0;
-let MAX_CONCURRENT = 2;
+let MAX = 2;
 
 // ==========================
-// 🧠 AUTO SCALE
+// ⚡ AUTO SCALE
 // ==========================
 function autoScale() {
-  const q = queue.length;
-
-  if (q > 20) MAX_CONCURRENT = 4;
-  else if (q > 10) MAX_CONCURRENT = 3;
-  else if (q > 5) MAX_CONCURRENT = 2;
-  else MAX_CONCURRENT = 1;
+  if (queue.length > 10) MAX = 3;
+  else if (queue.length > 5) MAX = 2;
+  else MAX = 1;
 }
 
 // ==========================
-// 🧠 DETECT IMAGE INTENT
+// 🧠 ANALYZE INTENT
 // ==========================
-function isImageRequest(text = "") {
-  const t = text.toLowerCase();
+function analyzeIntent(text = "") {
+  const t = text.toLowerCase().trim();
 
-  const keywords = [
-    "vẽ", "tạo ảnh", "render", "draw",
-    "anime", "chibi", "ảnh", "hình"
+  let scoreImage = 0;
+  let scoreChat = 0;
+
+  const imageSignals = [
+    "vẽ", "render", "tạo", "draw", "generate",
+    "anime", "chibi", "3d", "ảnh", "hình"
   ];
 
-  return keywords.some(k => t.includes(k));
+  const chatSignals = [
+    "là gì", "tại sao", "bao nhiêu",
+    "cách", "hướng dẫn", "tư vấn", "?"
+  ];
+
+  imageSignals.forEach(k => {
+    if (t.includes(k)) scoreImage += 2;
+  });
+
+  chatSignals.forEach(k => {
+    if (t.includes(k)) scoreChat += 2;
+  });
+
+  if (t.split(" ").length <= 5) scoreImage += 1;
+  if (t.split(" ").length > 8) scoreChat += 1;
+
+  const diff = scoreImage - scoreChat;
+
+  if (diff >= 2) return "IMAGE";
+  if (diff <= -2) return "CHAT";
+
+  return "AMBIGUOUS";
 }
 
 // ==========================
-// 🎨 IMAGE URL (FREE + KHÔNG LỖI)
+// 🧠 DECIDE WITH MEMORY
 // ==========================
-function generateImageUrl(prompt) {
+function decideIntent(userId, text) {
+  const base = analyzeIntent(text);
+
+  if (base !== "AMBIGUOUS") {
+    userMemory[userId] = base;
+    return base;
+  }
+
+  if (userMemory[userId]) {
+    return userMemory[userId];
+  }
+
+  if (text.length < 20) return "IMAGE";
+
+  return "ASK";
+}
+
+// ==========================
+// 🎨 IMAGE URL
+// ==========================
+function imageUrl(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux`;
 }
 
 // ==========================
-// 📩 REPLY LINE (1 LẦN)
+// 📩 LINE API
 // ==========================
 async function replyLine(token, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken: token,
-      messages
-    },
+    { replyToken: token, messages },
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
@@ -68,16 +112,10 @@ async function replyLine(token, messages) {
   );
 }
 
-// ==========================
-// 📩 PUSH LINE (CHO ẢNH)
-// ==========================
 async function pushLine(userId, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/push",
-    {
-      to: userId,
-      messages
-    },
+    { to: userId, messages },
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
@@ -88,54 +126,7 @@ async function pushLine(userId, messages) {
 }
 
 // ==========================
-// 📥 ADD QUEUE
-// ==========================
-function addQueue(job) {
-  queue.push(job);
-  autoScale();
-  processQueue();
-}
-
-// ==========================
-// ⚙️ PROCESS QUEUE
-// ==========================
-async function processQueue() {
-  if (running >= MAX_CONCURRENT) return;
-  if (queue.length === 0) return;
-
-  const job = queue.shift();
-  running++;
-
-  try {
-    await handleImageJob(job);
-  } catch (e) {
-    console.log("JOB ERROR:", e.message);
-  }
-
-  running--;
-  processQueue();
-}
-
-// ==========================
-// 🎯 HANDLE IMAGE JOB
-// ==========================
-async function handleImageJob(job) {
-  const { prompt, userId } = job;
-
-  const url = generateImageUrl(prompt);
-
-  // 👉 CHỈ GỬI ẢNH (KHÔNG TEXT)
-  await pushLine(userId, [
-    {
-      type: "image",
-      originalContentUrl: url,
-      previewImageUrl: url
-    }
-  ]);
-}
-
-// ==========================
-// 🧠 AI CHAT (FALLBACK TEXT)
+// 💬 AI CHAT
 // ==========================
 async function askAI(text) {
   try {
@@ -147,7 +138,7 @@ async function askAI(text) {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${OPENROUTER_KEY}`,
           "Content-Type": "application/json"
         }
       }
@@ -160,7 +151,7 @@ async function askAI(text) {
 }
 
 // ==========================
-// 🧠 FORMAT TEXT
+// 🧹 FORMAT TEXT
 // ==========================
 function formatText(text = "") {
   return text
@@ -170,7 +161,43 @@ function formatText(text = "") {
 }
 
 // ==========================
-// 🔗 WEBHOOK
+// 📦 QUEUE SYSTEM
+// ==========================
+function addQueue(job) {
+  queue.push(job);
+  autoScale();
+  processQueue();
+}
+
+async function processQueue() {
+  if (running >= MAX || queue.length === 0) return;
+
+  const job = queue.shift();
+  running++;
+
+  try {
+    const url = imageUrl(job.prompt);
+
+    await pushLine(job.userId, [
+      {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      }
+    ]);
+
+  } catch (e) {
+    await pushLine(job.userId, [
+      { type: "text", text: "⚠️ Lỗi tạo ảnh" }
+    ]);
+  }
+
+  running--;
+  processQueue();
+}
+
+// ==========================
+// 🚀 WEBHOOK
 // ==========================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
@@ -186,16 +213,16 @@ app.post("/webhook", async (req, res) => {
 
       console.log("USER:", text);
 
+      const intent = decideIntent(userId, text);
+
+      console.log("🧠 INTENT:", intent);
+
       // ==========================
-      // 🎨 IMAGE MODE
+      // 🎨 IMAGE
       // ==========================
-      if (isImageRequest(text)) {
-        // ❗ chỉ reply 1 lần (tránh lỗi)
+      if (intent === "IMAGE") {
         await replyLine(replyToken, [
-          {
-            type: "text",
-            text: "🎨 Đang tạo ảnh..."
-          }
+          { type: "text", text: "🎨 Đang tạo ảnh..." }
         ]);
 
         addQueue({
@@ -207,19 +234,34 @@ app.post("/webhook", async (req, res) => {
       }
 
       // ==========================
-      // 💬 CHAT MODE
+      // 💬 CHAT
       // ==========================
-      const ai = await askAI(text);
+      if (intent === "CHAT") {
+        const ai = await askAI(text);
 
-      await replyLine(replyToken, [
-        {
-          type: "text",
-          text: formatText(ai)
-        }
-      ]);
+        await replyLine(replyToken, [
+          { type: "text", text: formatText(ai) }
+        ]);
+
+        continue;
+      }
+
+      // ==========================
+      // ⚠️ ASK (MƠ HỒ)
+      // ==========================
+      if (intent === "ASK") {
+        await replyLine(replyToken, [
+          {
+            type: "text",
+            text: "🤖 Bạn muốn mình tạo ảnh hay giải thích?"
+          }
+        ]);
+
+        continue;
+      }
 
     } catch (err) {
-      console.log("WEBHOOK ERROR:", err.message);
+      console.log("ERROR:", err.message);
     }
   }
 });
@@ -229,5 +271,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V19 FINAL PRO SYSTEM RUNNING");
+  console.log("🚀 V21 HUMAN AI RUNNING");
 });
