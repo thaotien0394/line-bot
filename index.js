@@ -5,97 +5,160 @@ const app = express();
 app.use(express.json());
 
 // ==========================
-// 🔐 CONFIG
+// 🔐 ENV
 // ==========================
 const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
+const GROQ_KEY = process.env.GROQ_API_KEY;
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 🧠 DETECT IMAGE INTENT (AI TỰ HIỂU)
+// 🚫 BLOCK KEYWORD (NO RESPONSE)
+// ==========================
+const BLOCK_KEYWORDS = [
+  "rs", "ctkm", "mt", "hd", "bot", "laptop",
+  "mùa nóng", "pv", "camera", "8nttt", "bb", "tracham"
+];
+
+// ==========================
+// 🚫 KEY EXCLUSION (NO AI + NO IMAGE + NO REPLY)
+// ==========================
+function isKeyBlocked(text) {
+  const t = text.toLowerCase().trim();
+  return t.includes("key");
+}
+
+// ==========================
+// 🧠 CHECK BLOCK LIST
+// ==========================
+function isBlocked(text) {
+  const t = text.toLowerCase();
+  return BLOCK_KEYWORDS.some(k => t.includes(k));
+}
+
+// ==========================
+// 🧠 IMAGE INTENT DETECT
 // ==========================
 function isImageIntent(text) {
   const t = text.toLowerCase();
 
-  const strongKeywords = [
-    "vẽ", "ảnh", "image", "tạo ảnh", "thiết kế", "draw"
-  ];
+  const strong = ["vẽ", "ảnh", "image", "tạo ảnh", "thiết kế", "draw"];
+  if (strong.some(k => t.includes(k))) return true;
 
-  if (strongKeywords.some(k => t.includes(k))) return true;
-
-  const visualWords = [
-    "con", "người", "cảnh", "biển", "vũ trụ",
-    "robot", "anime", "thành phố", "thiên nhiên"
-  ];
-
-  return visualWords.some(k => t.includes(k));
+  const visual = ["con", "người", "cảnh", "biển", "vũ trụ", "anime", "robot", "thành phố"];
+  return visual.some(k => t.includes(k));
 }
 
 // ==========================
-// 🎨 IMAGE ENGINE 1
+// 🎨 IMAGE ENGINE
 // ==========================
 function imageEngine1(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
 }
 
-// ==========================
-// 🎨 IMAGE ENGINE 2
-// ==========================
 function imageEngine2(prompt) {
   return `https://pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux`;
 }
 
-// ==========================
-// 🎨 CANVA FALLBACK LINK
-// ==========================
 function canvaFallback(prompt) {
-  const search = encodeURIComponent(prompt);
-  return `https://www.canva.com/templates/search/${search}/`;
+  return `https://www.canva.com/templates/search/${encodeURIComponent(prompt)}/`;
 }
 
 // ==========================
-// 🧠 SAFE IMAGE GENERATOR
+// 🧠 GROQ AI
+// ==========================
+async function askGroq(text) {
+  const res = await axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: "Trả lời tiếng Việt rõ ràng, ngắn gọn, không markdown"
+        },
+        { role: "user", content: text }
+      ],
+      temperature: 0.7
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${GROQ_KEY}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 15000
+    }
+  );
+
+  return res.data.choices[0].message.content;
+}
+
+// ==========================
+// 🔁 OPENROUTER AI
+// ==========================
+async function askOpenRouter(text) {
+  const res = await axios.post(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      model: "deepseek/deepseek-chat-v3",
+      messages: [{ role: "user", content: text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_KEY}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 15000
+    }
+  );
+
+  return res.data.choices[0].message.content;
+}
+
+// ==========================
+// 🤖 AI ROUTER
+// ==========================
+async function askAI(text) {
+  try {
+    const g = await askGroq(text);
+    if (g) return g;
+  } catch (e) {}
+
+  try {
+    const o = await askOpenRouter(text);
+    if (o) return o;
+  } catch (e2) {}
+
+  return "⚠️ AI đang bận, thử lại sau.";
+}
+
+// ==========================
+// 🎨 IMAGE SYSTEM
 // ==========================
 async function generateImageUltra(prompt) {
-  // LEVEL 1
   try {
     const url1 = imageEngine1(prompt);
     await axios.get(url1, { timeout: 5000 });
-
-    console.log("🎨 ENGINE 1 OK");
     return { type: "image", url: url1 };
 
   } catch (e) {
-    console.log("⚠️ ENGINE 1 FAIL");
-
-    // LEVEL 2
     try {
       const url2 = imageEngine2(prompt);
       await axios.get(url2, { timeout: 5000 });
-
-      console.log("🎨 ENGINE 2 OK");
       return { type: "image", url: url2 };
 
     } catch (e2) {
-      console.log("❌ BOTH IMAGE ENGINE FAIL → CANVA");
-
-      // LEVEL 3 CANVA
-      return {
-        type: "canva",
-        url: canvaFallback(prompt)
-      };
+      return { type: "canva", url: canvaFallback(prompt) };
     }
   }
 }
 
 // ==========================
-// 📩 LINE REPLY
+// 📩 LINE
 // ==========================
 async function replyLine(replyToken, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken,
-      messages
-    },
+    { replyToken, messages },
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
@@ -119,15 +182,32 @@ app.post("/webhook", async (req, res) => {
       if (event.message.type !== "text") continue;
 
       const text = event.message.text;
-      const replyToken = event.replyToken;
 
       console.log("USER:", text);
+
+      // ==========================
+      // 🚫 KEY EXCLUSION (CẤP CAO NHẤT)
+      // ==========================
+      if (isKeyBlocked(text)) {
+        console.log("🚫 BLOCK KEY → SILENT");
+        continue; // không phản hồi
+      }
+
+      // ==========================
+      // 🚫 BLOCK LIST
+      // ==========================
+      if (isBlocked(text)) {
+        console.log("🚫 BLOCKED → SILENT");
+        continue;
+      }
 
       // ==========================
       // 🎨 IMAGE MODE
       // ==========================
       if (isImageIntent(text)) {
         const result = await generateImageUltra(text);
+
+        const replyToken = event.replyToken;
 
         if (result.type === "image") {
           await replyLine(replyToken, [
@@ -138,32 +218,24 @@ app.post("/webhook", async (req, res) => {
               previewImageUrl: result.url
             }
           ]);
-        }
-
-        if (result.type === "canva") {
+        } else {
           await replyLine(replyToken, [
-            {
-              type: "text",
-              text: "⚠️ Không tạo được ảnh AI, mở Canva để chỉnh sửa:"
-            },
-            {
-              type: "text",
-              text: result.url
-            }
+            { type: "text", text: "⚠️ Dùng Canva thay thế:" },
+            { type: "text", text: result.url }
           ]);
         }
 
-        continue; // 🚨 KHÔNG chạy AI text
+        continue;
       }
 
       // ==========================
-      // 🤖 TEXT MODE (placeholder AI)
+      // 🤖 TEXT AI
       // ==========================
+      const replyToken = event.replyToken;
+      const aiText = await askAI(text);
+
       await replyLine(replyToken, [
-        {
-          type: "text",
-          text: "AI text chưa gắn (có thể thêm Groq/OpenRouter)"
-        }
+        { type: "text", text: aiText }
       ]);
 
     } catch (err) {
@@ -177,5 +249,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 AI IMAGE ULTRA PRO + CANVA RUNNING:", PORT);
+  console.log("🚀 ULTRA PRO MAX SYSTEM 2.0 RUNNING:", PORT);
 });
