@@ -12,162 +12,133 @@ const GROQ_KEY = process.env.GROQ_API_KEY;
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 📊 LOG HELPER (QUAN TRỌNG)
+// 🚫 KEYWORD BLOCK (KHÔNG AI TRẢ LỜI)
 // ==========================
-function log(title, data) {
-  console.log("\n==============================");
-  console.log("📌 " + title);
-  console.log("==============================");
-  console.log(data);
-  console.log("==============================\n");
+const BLOCK_KEYWORDS = [
+  "rs", "ctkm", "mt", "hd", "bot", "laptop",
+  "mùa nóng", "pv", "camera", "8nttt", "bb", "tracham"
+];
+
+// ==========================
+// 🧠 GROQ AUTO MODEL LIST
+// ==========================
+const GROQ_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant"
+];
+
+// ==========================
+// 🔍 CHECK BLOCK KEYWORD
+// ==========================
+function isBlocked(text) {
+  const t = text.toLowerCase();
+  return BLOCK_KEYWORDS.some(k => t.includes(k));
 }
 
 // ==========================
 // 🧼 CLEAN TEXT
 // ==========================
 function cleanText(text = "") {
-  return text
-    .replace(/[*#_>`~\-]/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return text.replace(/[*#_>`~\-]/g, "").trim();
 }
 
 // ==========================
 // 📩 LINE REPLY
 // ==========================
 async function replyLine(replyToken, messages) {
-  try {
-    await axios.post(
-      "https://api.line.me/v2/bot/message/reply",
-      { replyToken, messages },
-      {
-        headers: {
-          Authorization: `Bearer ${LINE_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 10000
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    { replyToken, messages },
+    {
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN}`,
+        "Content-Type": "application/json"
       }
-    );
-
-    log("LINE REPLY SUCCESS", messages);
-  } catch (err) {
-    log("LINE ERROR", {
-      status: err.response?.status,
-      data: err.response?.data,
-      message: err.message
-    });
-  }
+    }
+  );
 }
 
 // ==========================
-// 🤖 GROQ AI (FULL DEBUG)
+// 🤖 GROQ AUTO MODEL (SMART)
 // ==========================
 async function askGroq(text) {
-  try {
-    log("GROQ REQUEST", {
-      model: "llama3-70b-8192",
-      input: text
-    });
-
-    const res = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama3-70b-8192",
-        messages: [
-          {
-            role: "system",
-            content: "Trả lời tiếng Việt, không markdown, rõ ràng, ngắn gọn."
-          },
-          { role: "user", content: text }
-        ],
-        temperature: 0.7
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${GROQ_KEY}`,
-          "Content-Type": "application/json"
+  for (let model of GROQ_MODELS) {
+    try {
+      const res = await axios.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Trả lời tiếng Việt rõ ràng, không markdown, dễ hiểu, ngắn gọn"
+            },
+            { role: "user", content: text }
+          ],
+          temperature: 0.7
         },
-        timeout: 15000
-      }
-    );
+        {
+          headers: {
+            Authorization: `Bearer ${GROQ_KEY}`,
+            "Content-Type": "application/json"
+          },
+          timeout: 15000
+        }
+      );
 
-    log("GROQ RESPONSE", res.data);
+      console.log("✅ GROQ OK MODEL:", model);
+      return res.data.choices[0].message.content;
 
-    return res.data.choices[0].message.content;
-
-  } catch (err) {
-    log("❌ GROQ ERROR DETAIL", {
-      status: err.response?.status,
-      statusText: err.response?.statusText,
-      data: err.response?.data,
-      message: err.message,
-      stack: err.stack
-    });
-
-    return null;
+    } catch (err) {
+      console.log("❌ GROQ FAIL MODEL:", model);
+      console.log("STATUS:", err.response?.status);
+      console.log("DATA:", err.response?.data);
+    }
   }
+
+  return null;
 }
 
 // ==========================
-// 🔁 OPENROUTER (FULL DEBUG)
+// 🔁 OPENROUTER BACKUP
 // ==========================
 async function askOpenRouter(text) {
   try {
-    log("OPENROUTER REQUEST", {
-      model: "deepseek/deepseek-chat",
-      input: text
-    });
-
     const res = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "deepseek/deepseek-chat",
-        messages: [{ role: "user", content: text }],
-        temperature: 0.7
+        model: "deepseek/deepseek-chat-v3",
+        messages: [{ role: "user", content: text }]
       },
       {
         headers: {
           Authorization: `Bearer ${OPENROUTER_KEY}`,
           "Content-Type": "application/json"
-        },
-        timeout: 15000
+        }
       }
     );
 
-    log("OPENROUTER RESPONSE", res.data);
-
     return res.data.choices[0].message.content;
-
   } catch (err) {
-    log("❌ OPENROUTER ERROR DETAIL", {
-      status: err.response?.status,
-      data: err.response?.data,
-      message: err.message
-    });
-
+    console.log("❌ OPENROUTER FAIL:", err.response?.data);
     return null;
   }
 }
 
 // ==========================
-// 🤖 AI ROUTER (SAFE)
+// 🤖 AI ROUTER (FULL SAFE)
 // ==========================
 async function askAI(text) {
   let groq = await askGroq(text);
 
-  if (groq) {
-    log("AI SOURCE", "GROQ");
-    return groq;
-  }
+  if (groq) return groq;
 
-  log("AI SWITCH", "Groq fail → OpenRouter");
+  console.log("🔁 SWITCH → OPENROUTER");
 
   let or = await askOpenRouter(text);
 
-  if (or) {
-    log("AI SOURCE", "OPENROUTER");
-    return or;
-  }
+  if (or) return or;
 
   return "⚠️ Hệ thống AI đang quá tải, vui lòng thử lại sau.";
 }
@@ -177,8 +148,6 @@ async function askAI(text) {
 // ==========================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-
-  log("WEBHOOK EVENT", req.body);
 
   const events = req.body.events || [];
 
@@ -190,19 +159,29 @@ app.post("/webhook", async (req, res) => {
       const text = event.message.text;
       const replyToken = event.replyToken;
 
-      log("USER MESSAGE", text);
+      console.log("USER:", text);
 
-      const aiText = cleanText(await askAI(text));
+      // ==========================
+      // 🚫 BLOCK KEYWORDS → KHÔNG AI
+      // ==========================
+      if (isBlocked(text)) {
+        console.log("🚫 BLOCKED KEYWORD → NO AI RESPONSE");
+        continue; // ❌ không trả lời luôn
+      }
+
+      // ==========================
+      // 🤖 AI MODE
+      // ==========================
+      let aiText = await askAI(text);
+
+      aiText = cleanText(aiText);
 
       await replyLine(replyToken, [
         { type: "text", text: aiText }
       ]);
 
     } catch (err) {
-      log("WEBHOOK ERROR", {
-        message: err.message,
-        stack: err.stack
-      });
+      console.log("WEBHOOK ERROR:", err.message);
     }
   }
 });
@@ -212,5 +191,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 DEBUG BOT RUNNING PORT:", PORT);
+  console.log("🚀 AUTO MODEL BOT PRO RUNNING:", PORT);
 });
