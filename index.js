@@ -77,15 +77,15 @@ function checkUser(userId) {
 async function askGemini(text) {
   try {
     const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+  `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key=${AIzaSyA752UvdiN5OJ-6rhOzZ1GiNbFgAnzyW0M}`,
+  {
+    contents: [
       {
-        contents: [
-          {
-            parts: [{ text }]
-          }
-        ]
+        parts: [{ text }]
       }
-    );
+    ]
+  }
+);
 
     return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "⚠️ Không có phản hồi";
   } catch (err) {
