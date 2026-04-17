@@ -5,160 +5,93 @@ const app = express();
 app.use(express.json());
 
 // ==========================
-// 🔐 ENV
+// 🔐 CONFIG
 // ==========================
 const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const GROQ_KEY = process.env.GROQ_API_KEY;
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
+const HF_TOKEN = process.env.HUGGINGFACE_API_KEY;
 
 // ==========================
-// 🚫 BLOCK KEYWORD (NO RESPONSE)
+// 📊 QUEUE SYSTEM
 // ==========================
-const BLOCK_KEYWORDS = [
-  "rs", "ctkm", "mt", "hd", "bot", "laptop",
-  "mùa nóng", "pv", "camera", "8nttt", "bb", "tracham"
-];
+let queue = [];
+let running = 0;
+let MAX_CONCURRENT = 2;
 
 // ==========================
-// 🚫 KEY EXCLUSION (NO AI + NO IMAGE + NO REPLY)
+// 📈 STATS
 // ==========================
-function isKeyBlocked(text) {
-  const t = text.toLowerCase().trim();
-  return t.includes("key");
+let stats = {
+  total: 0,
+  done: 0,
+  fail: 0
+};
+
+// ==========================
+// 👑 VIP USERS
+// ==========================
+const VIP_USERS = new Set([
+  "VIP_USER_ID_1",
+  "VIP_USER_ID_2"
+]);
+
+// ==========================
+// 🧠 AUTO SCALE ENGINE
+// ==========================
+function autoScale() {
+  const q = queue.length;
+
+  if (q > 20) MAX_CONCURRENT = 4;
+  else if (q > 10) MAX_CONCURRENT = 3;
+  else if (q > 5) MAX_CONCURRENT = 2;
+  else MAX_CONCURRENT = 1;
+
+  console.log(`⚙️ AUTO SCALE → workers = ${MAX_CONCURRENT} | queue = ${q}`);
 }
 
 // ==========================
-// 🧠 CHECK BLOCK LIST
+// 🧠 PROMPT ENGINE
 // ==========================
-function isBlocked(text) {
-  const t = text.toLowerCase();
-  return BLOCK_KEYWORDS.some(k => t.includes(k));
+function enhancePrompt(prompt) {
+  return `
+ultra detailed, cinematic lighting, masterpiece, 8k, sharp focus,
+${prompt},
+professional digital art, trending on artstation
+  `.trim();
 }
 
 // ==========================
-// 🧠 IMAGE INTENT DETECT
+// 🎨 IMAGE AI
 // ==========================
-function isImageIntent(text) {
-  const t = text.toLowerCase();
+async function generateImage(prompt) {
+  const res = await axios.post(
+    "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+    { inputs: prompt },
+    {
+      headers: {
+        Authorization: `Bearer ${HF_TOKEN}`
+      },
+      responseType: "arraybuffer",
+      timeout: 30000
+    }
+  );
 
-  const strong = ["vẽ", "ảnh", "image", "tạo ảnh", "thiết kế", "draw"];
-  if (strong.some(k => t.includes(k))) return true;
-
-  const visual = ["con", "người", "cảnh", "biển", "vũ trụ", "anime", "robot", "thành phố"];
-  return visual.some(k => t.includes(k));
+  return Buffer.from(res.data, "binary");
 }
 
 // ==========================
-// 🎨 IMAGE ENGINE
+// 🎨 FALLBACK IMAGE
 // ==========================
-function imageEngine1(prompt) {
+function fallbackImage(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
 }
 
-function imageEngine2(prompt) {
-  return `https://pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux`;
-}
-
-function canvaFallback(prompt) {
-  return `https://www.canva.com/templates/search/${encodeURIComponent(prompt)}/`;
-}
-
 // ==========================
-// 🧠 GROQ AI
+// 📩 LINE REPLY
 // ==========================
-async function askGroq(text) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        {
-          role: "system",
-          content: "Trả lời tiếng Việt rõ ràng, ngắn gọn, không markdown"
-        },
-        { role: "user", content: text }
-      ],
-      temperature: 0.7
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${GROQ_KEY}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 15000
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// ==========================
-// 🔁 OPENROUTER AI
-// ==========================
-async function askOpenRouter(text) {
-  const res = await axios.post(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      model: "deepseek/deepseek-chat-v3",
-      messages: [{ role: "user", content: text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_KEY}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 15000
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// ==========================
-// 🤖 AI ROUTER
-// ==========================
-async function askAI(text) {
-  try {
-    const g = await askGroq(text);
-    if (g) return g;
-  } catch (e) {}
-
-  try {
-    const o = await askOpenRouter(text);
-    if (o) return o;
-  } catch (e2) {}
-
-  return "⚠️ AI đang bận, thử lại sau.";
-}
-
-// ==========================
-// 🎨 IMAGE SYSTEM
-// ==========================
-async function generateImageUltra(prompt) {
-  try {
-    const url1 = imageEngine1(prompt);
-    await axios.get(url1, { timeout: 5000 });
-    return { type: "image", url: url1 };
-
-  } catch (e) {
-    try {
-      const url2 = imageEngine2(prompt);
-      await axios.get(url2, { timeout: 5000 });
-      return { type: "image", url: url2 };
-
-    } catch (e2) {
-      return { type: "canva", url: canvaFallback(prompt) };
-    }
-  }
-}
-
-// ==========================
-// 📩 LINE
-// ==========================
-async function replyLine(replyToken, messages) {
+async function replyLine(token, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
-    { replyToken, messages },
+    { replyToken: token, messages },
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
@@ -166,6 +99,100 @@ async function replyLine(replyToken, messages) {
       }
     }
   );
+}
+
+// ==========================
+// 📊 DASHBOARD
+// ==========================
+app.get("/dashboard", (req, res) => {
+  res.json({
+    queue: queue.length,
+    running,
+    workers: MAX_CONCURRENT,
+    stats
+  });
+});
+
+// ==========================
+// 📥 ADD QUEUE (VIP PRIORITY)
+// ==========================
+function addQueue(job) {
+  stats.total++;
+
+  if (job.vip) queue.unshift(job);
+  else queue.push(job);
+
+  autoScale();
+  processQueue();
+}
+
+// ==========================
+// ⚙️ QUEUE PROCESSOR
+// ==========================
+async function processQueue() {
+  autoScale();
+
+  if (running >= MAX_CONCURRENT) return;
+  if (queue.length === 0) return;
+
+  const job = queue.shift();
+  running++;
+
+  try {
+    await handleJob(job);
+    stats.done++;
+  } catch (e) {
+    stats.fail++;
+    console.log("JOB ERROR:", e.message);
+  }
+
+  running--;
+  processQueue();
+}
+
+// ==========================
+// 🎯 HANDLE JOB
+// ==========================
+async function handleJob(job) {
+  const { text, replyToken } = job;
+
+  await replyLine(replyToken, [
+    {
+      type: "text",
+      text: `⏳ Render... Queue: ${queue.length} | Workers: ${MAX_CONCURRENT}`
+    }
+  ]);
+
+  const prompt = enhancePrompt(text);
+
+  try {
+    const img = await generateImage(prompt);
+
+    const base64 = img.toString("base64");
+    const url = `data:image/png;base64,${base64}`;
+
+    await replyLine(replyToken, [
+      { type: "text", text: "🎨 V10 render complete" },
+      {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      }
+    ]);
+  } catch (e) {
+    console.log("AI FAIL → FALLBACK");
+
+    const url = fallbackImage(prompt);
+
+    await replyLine(replyToken, [
+      { type: "text", text: "⚠️ Fallback image used" },
+      {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      }
+    ]);
+  }
 }
 
 // ==========================
@@ -182,61 +209,18 @@ app.post("/webhook", async (req, res) => {
       if (event.message.type !== "text") continue;
 
       const text = event.message.text;
-
-      console.log("USER:", text);
-
-      // ==========================
-      // 🚫 KEY EXCLUSION (CẤP CAO NHẤT)
-      // ==========================
-      if (isKeyBlocked(text)) {
-        console.log("🚫 BLOCK KEY → SILENT");
-        continue; // không phản hồi
-      }
-
-      // ==========================
-      // 🚫 BLOCK LIST
-      // ==========================
-      if (isBlocked(text)) {
-        console.log("🚫 BLOCKED → SILENT");
-        continue;
-      }
-
-      // ==========================
-      // 🎨 IMAGE MODE
-      // ==========================
-      if (isImageIntent(text)) {
-        const result = await generateImageUltra(text);
-
-        const replyToken = event.replyToken;
-
-        if (result.type === "image") {
-          await replyLine(replyToken, [
-            { type: "text", text: "🎨 Đang tạo ảnh..." },
-            {
-              type: "image",
-              originalContentUrl: result.url,
-              previewImageUrl: result.url
-            }
-          ]);
-        } else {
-          await replyLine(replyToken, [
-            { type: "text", text: "⚠️ Dùng Canva thay thế:" },
-            { type: "text", text: result.url }
-          ]);
-        }
-
-        continue;
-      }
-
-      // ==========================
-      // 🤖 TEXT AI
-      // ==========================
+      const userId = event.source?.userId;
       const replyToken = event.replyToken;
-      const aiText = await askAI(text);
 
-      await replyLine(replyToken, [
-        { type: "text", text: aiText }
-      ]);
+      const isVip = VIP_USERS.has(userId);
+
+      addQueue({
+        text,
+        replyToken,
+        vip: isVip,
+        time: Date.now(),
+        userId
+      });
 
     } catch (err) {
       console.log("WEBHOOK ERROR:", err.message);
@@ -249,5 +233,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 ULTRA PRO MAX SYSTEM 2.0 RUNNING:", PORT);
+  console.log("🚀 MIDJOURNEY V10 AUTO SCALE RUNNING:", PORT);
 });
