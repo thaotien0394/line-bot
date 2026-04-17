@@ -1,115 +1,64 @@
+const express = require("express");
 const axios = require("axios");
+
+const app = express();
+app.use(express.json());
 
 // ==========================
 // 🔐 CONFIG
 // ==========================
 const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const HF_TOKEN = process.env.HUGGINGFACE_API_KEY;
 
 // ==========================
-// 🧠 AI CHAT (GROQ / OPENROUTER)
+// 📦 QUEUE SYSTEM
 // ==========================
-async function askAI(text) {
-  try {
-    const res = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama-3.1-70b-versatile",
-        messages: [
-          { role: "system", content: "Bạn là trợ lý AI thông minh, trả lời tiếng Việt rõ ràng." },
-          { role: "user", content: text }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-        }
-      }
-    );
+let queue = [];
+let running = 0;
+let MAX_CONCURRENT = 2;
 
-    return res.data.choices[0].message.content;
-  } catch (e) {
-    // fallback OpenRouter
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "deepseek/deepseek-chat",
-        messages: [{ role: "user", content: text }]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
-        }
-      }
-    );
+// ==========================
+// 🧠 AUTO SCALE
+// ==========================
+function autoScale() {
+  const q = queue.length;
 
-    return res.data.choices[0].message.content;
-  }
+  if (q > 20) MAX_CONCURRENT = 4;
+  else if (q > 10) MAX_CONCURRENT = 3;
+  else if (q > 5) MAX_CONCURRENT = 2;
+  else MAX_CONCURRENT = 1;
 }
 
 // ==========================
-// 🎨 IMAGE ENGINE
+// 🧠 DETECT IMAGE INTENT
 // ==========================
-async function generateImage(prompt) {
-  const res = await axios.post(
-    "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
-    { inputs: prompt },
-    {
-      headers: {
-        Authorization: `Bearer ${HF_TOKEN}`
-      },
-      responseType: "arraybuffer",
-      timeout: 30000
-    }
-  );
-
-  return Buffer.from(res.data, "binary");
-}
-
-// ==========================
-// 🧠 MULTI ACTION PARSER
-// ==========================
-function parseMultiAction(text) {
+function isImageRequest(text = "") {
   const t = text.toLowerCase();
 
-  let actions = {
-    chat: null,
-    image: null
-  };
+  const keywords = [
+    "vẽ", "tạo ảnh", "render", "draw",
+    "anime", "chibi", "ảnh", "hình"
+  ];
 
-  // 🎨 IMAGE DETECT
-  const imageKeywords = ["vẽ", "render", "tạo ảnh", "draw", "anime", "chibi"];
-
-  const hasImage = imageKeywords.some(k => t.includes(k));
-
-  if (hasImage) {
-    actions.image = text;
-  }
-
-  // 💬 CHAT ALWAYS EXTRACT MAIN IDEA
-  actions.chat = text;
-
-  return actions;
+  return keywords.some(k => t.includes(k));
 }
 
 // ==========================
-// 🧠 CLEAN TEXT
+// 🎨 IMAGE URL (FREE + KHÔNG LỖI)
 // ==========================
-function formatText(text = "") {
-  return text
-    .replace(/\*/g, "")
-    .replace(/##/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+function generateImageUrl(prompt) {
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux`;
 }
 
 // ==========================
-// 📩 LINE REPLY
+// 📩 REPLY LINE (1 LẦN)
 // ==========================
 async function replyLine(token, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
-    { replyToken: token, messages },
+    {
+      replyToken: token,
+      messages
+    },
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
@@ -120,84 +69,109 @@ async function replyLine(token, messages) {
 }
 
 // ==========================
-// 🚀 HANDLE MULTI ACTION
+// 📩 PUSH LINE (CHO ẢNH)
 // ==========================
-async function handleMessage(event) {
-  const text = event.message?.text;
-  const replyToken = event.replyToken;
-
-  if (!text) return;
-
-  const actions = parseMultiAction(text);
-
-  console.log("🧠 ACTIONS:", actions);
-
-  let messages = [];
-
-  // ==========================
-  // 💬 CHAT
-  // ==========================
-  if (actions.chat) {
-    try {
-      const ai = await askAI(actions.chat);
-
-      messages.push({
-        type: "text",
-        text: formatText(ai)
-      });
-    } catch (e) {
-      messages.push({
-        type: "text",
-        text: "⚠️ AI chat lỗi"
-      });
+async function pushLine(userId, messages) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/push",
+    {
+      to: userId,
+      messages
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN}`,
+        "Content-Type": "application/json"
+      }
     }
+  );
+}
+
+// ==========================
+// 📥 ADD QUEUE
+// ==========================
+function addQueue(job) {
+  queue.push(job);
+  autoScale();
+  processQueue();
+}
+
+// ==========================
+// ⚙️ PROCESS QUEUE
+// ==========================
+async function processQueue() {
+  if (running >= MAX_CONCURRENT) return;
+  if (queue.length === 0) return;
+
+  const job = queue.shift();
+  running++;
+
+  try {
+    await handleImageJob(job);
+  } catch (e) {
+    console.log("JOB ERROR:", e.message);
   }
 
-  // ==========================
-  // 🎨 IMAGE (QUEUE SAFE)
-  // ==========================
-  if (actions.image) {
-    messages.push({
-      type: "text",
-      text: "🎨 Đang tạo ảnh..."
-    });
+  running--;
+  processQueue();
+}
 
-    // chạy async không block chat
-    generateImage(actions.image)
-      .then(img => {
-        const base64 = img.toString("base64");
-        const url = `data:image/png;base64,${base64}`;
+// ==========================
+// 🎯 HANDLE IMAGE JOB
+// ==========================
+async function handleImageJob(job) {
+  const { prompt, userId } = job;
 
-        return replyLine(replyToken, [
-          {
-            type: "image",
-            originalContentUrl: url,
-            previewImageUrl: url
-          }
-        ]);
-      })
-      .catch(() => {
-        return replyLine(replyToken, [
-          { type: "text", text: "⚠️ Lỗi tạo ảnh" }
-        ]);
-      });
+  const url = generateImageUrl(prompt);
+
+  // 👉 CHỈ GỬI ẢNH (KHÔNG TEXT)
+  await pushLine(userId, [
+    {
+      type: "image",
+      originalContentUrl: url,
+      previewImageUrl: url
+    }
+  ]);
+}
+
+// ==========================
+// 🧠 AI CHAT (FALLBACK TEXT)
+// ==========================
+async function askAI(text) {
+  try {
+    const res = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "deepseek/deepseek-chat",
+        messages: [{ role: "user", content: text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    return res.data.choices[0].message.content;
+  } catch (e) {
+    return "⚠️ AI đang bận";
   }
+}
 
-  // ==========================
-  // 📩 REPLY CHAT FIRST
-  // ==========================
-  if (messages.length > 0) {
-    await replyLine(replyToken, messages);
-  }
+// ==========================
+// 🧠 FORMAT TEXT
+// ==========================
+function formatText(text = "") {
+  return text
+    .replace(/\*/g, "")
+    .replace(/##/g, "")
+    .trim();
 }
 
 // ==========================
 // 🔗 WEBHOOK
 // ==========================
-const express = require("express");
-const app = express();
-app.use(express.json());
-
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -206,17 +180,54 @@ app.post("/webhook", async (req, res) => {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      await handleMessage(event);
+      const text = event.message.text;
+      const replyToken = event.replyToken;
+      const userId = event.source.userId;
+
+      console.log("USER:", text);
+
+      // ==========================
+      // 🎨 IMAGE MODE
+      // ==========================
+      if (isImageRequest(text)) {
+        // ❗ chỉ reply 1 lần (tránh lỗi)
+        await replyLine(replyToken, [
+          {
+            type: "text",
+            text: "🎨 Đang tạo ảnh..."
+          }
+        ]);
+
+        addQueue({
+          prompt: text,
+          userId
+        });
+
+        continue;
+      }
+
+      // ==========================
+      // 💬 CHAT MODE
+      // ==========================
+      const ai = await askAI(text);
+
+      await replyLine(replyToken, [
+        {
+          type: "text",
+          text: formatText(ai)
+        }
+      ]);
 
     } catch (err) {
-      console.log("ERROR:", err.message);
+      console.log("WEBHOOK ERROR:", err.message);
     }
   }
 });
 
 // ==========================
-// 🚀 START
+// 🚀 START SERVER
 // ==========================
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 V18 GOD BRAIN RUNNING");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🚀 V19 FINAL PRO SYSTEM RUNNING");
 });
