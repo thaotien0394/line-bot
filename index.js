@@ -76,8 +76,8 @@ function checkUser(userId) {
 // ==========================
 async function askGemini(text) {
   try {
-    const res = await axios.post(
-  `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
+   const res = await axios.post(
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
   {
     contents: [
       {
