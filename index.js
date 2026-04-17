@@ -17,43 +17,34 @@ console.log("OPENROUTER:", OPENROUTER_KEY ? "OK" : "MISSING");
 // 🤖 GROQ (AI CHÍNH)
 // ==========================
 async function askGroq(text) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama3-70b-8192",
-      messages: [
-        {
-          role: "system",
-          content: `
-Bạn là nhân viên tư vấn bán hàng chuyên nghiệp.
-
-Luôn:
-- Hỏi lại nhu cầu
-- Gợi ý sản phẩm
-- Nói ngắn gọn dễ hiểu
-
-QUAN TRỌNG:
-Luôn thêm dòng cuối:
-IMAGE_PROMPT: mô tả sản phẩm bằng tiếng Anh để tạo ảnh đẹp
-
-Ví dụ:
-gaming laptop RGB, neon lighting, ultra realistic, 4k
-`
-        },
-        { role: "user", content: text }
-      ]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${GROQ_KEY}`,
-        "Content-Type": "application/json"
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.1-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content: "Bạn là nhân viên tư vấn bán hàng chuyên nghiệp"
+          },
+          { role: "user", content: text }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
-    }
-  );
+    );
 
-  return res.data.choices[0].message.content;
+    return res.data.choices[0].message.content;
+
+  } catch (err) {
+    console.error("❌ GROQ ERROR:", err.response?.data || err.message);
+    throw err;
+  }
 }
-
 // ==========================
 // 🔁 OPENROUTER (BACKUP)
 // ==========================
