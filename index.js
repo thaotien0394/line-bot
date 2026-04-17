@@ -26,130 +26,140 @@ function getContext(userId) {
 }
 
 // ==========================
-// 🚫 ANTI SPAM
+// 🚫 ANTI SPAM (NHANH)
 // ==========================
 let cooldown = {};
 
 function isSpam(userId) {
   const now = Date.now();
+
   if (!cooldown[userId]) {
     cooldown[userId] = now;
     return false;
   }
+
   if (now - cooldown[userId] < 1000) return true;
+
   cooldown[userId] = now;
   return false;
 }
 
 // ==========================
-// 📊 CACHE GIÁ
+// 🚫 BLOCK EXACT (KHÔNG TƯƠNG ĐỐI)
 // ==========================
-let cache = {};
-
-function getCache(key) {
-  if (!cache[key]) return null;
-  if (Date.now() - cache[key].time > 5 * 60 * 1000) return null;
-  return cache[key].data;
+function normalize(text) {
+  return text.toLowerCase().replace(/[^\w\s]/g, "").trim();
 }
 
-function setCache(key, data) {
-  cache[key] = {
-    data,
-    time: Date.now()
-  };
+function isBlockedSilent(text) {
+  const blockList = [
+    "key","ctkm","bb","camera","mt","hd",
+    "bot","laptop","mùa nóng","pv","8nttt","tracham","rs"
+  ];
+
+  const t = normalize(text);
+  return blockList.includes(t); // exact match only
 }
 
 // ==========================
-// 🔍 DETECT TECH
+// 🎨 IMAGE KEYWORD
 // ==========================
-function isTech(text) {
+function isImageRequest(text) {
+  const keywords = [
+    "vẽ","ảnh","tạo ảnh","hình","anime",
+    "3d","render","avatar","poster","logo"
+  ];
+
   const t = text.toLowerCase();
-  return (
-    t.includes("iphone") ||
-    t.includes("samsung") ||
-    t.includes("xiaomi") ||
-    t.includes("laptop") ||
-    t.includes("giá") ||
-    t.includes("so sánh")
-  );
+  return keywords.some(k => t.includes(k));
 }
 
 // ==========================
-// 🌐 LẤY GIÁ (GIẢ LẬP + THỰC TẾ)
+// 🎯 STYLE AUTO
 // ==========================
-async function getPrices(product) {
-  const cacheData = getCache(product);
-  if (cacheData) return cacheData;
+function detectStyle(text) {
+  const t = text.toLowerCase();
 
-  try {
-    // ⚠️ DEMO: vì site thật chặn bot → dùng dữ liệu gần thực tế
-    const data = {
-      cellphones: Math.floor(Math.random() * 2000000) + 17000000,
-      fpt: Math.floor(Math.random() * 2000000) + 18000000,
-      tgdd: Math.floor(Math.random() * 2000000) + 18500000,
-      cholon: Math.floor(Math.random() * 2000000) + 17500000
-    };
+  if (t.includes("anime")) return "anime style";
+  if (t.includes("3d")) return "3D render";
+  if (t.includes("realistic")) return "realistic photo";
+  if (t.includes("chibi")) return "chibi cute";
 
-    setCache(product, data);
-    return data;
+  return "ultra realistic, 4k, cinematic lighting";
+}
 
-  } catch {
-    return null;
+// ==========================
+// 🖼️ IMAGE URL
+// ==========================
+function imageUrl(prompt) {
+  const style = detectStyle(prompt);
+  const finalPrompt = `${prompt}, ${style}`;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}`;
+}
+
+// ==========================
+// 📦 IMAGE QUEUE SYSTEM
+// ==========================
+let queue = [];
+let runningUsers = new Set();
+let MAX_USERS = 4;
+
+// auto scale theo tải
+function autoScale() {
+  if (queue.length > 10) MAX_USERS = 4;
+  else if (queue.length > 5) MAX_USERS = 3;
+  else MAX_USERS = 2;
+}
+
+// thêm job
+function addJob(userId, prompt) {
+  queue.push({ userId, prompt });
+  autoScale();
+  processQueue();
+}
+
+// xử lý queue
+async function processQueue() {
+  if (queue.length === 0) return;
+
+  // nếu đã đủ user đang chạy
+  if (runningUsers.size >= MAX_USERS) return;
+
+  const job = queue.shift();
+
+  // nếu user này đang chạy rồi → skip (tránh spam)
+  if (runningUsers.has(job.userId)) {
+    processQueue();
+    return;
   }
-}
 
-// ==========================
-// 🤖 AI PHÂN TÍCH
-// ==========================
-async function analyzePrice(product, prices) {
+  runningUsers.add(job.userId);
+
   try {
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
+    const url = imageUrl(job.prompt);
+
+    await pushLine(job.userId, [
       {
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `
-Bạn là chuyên gia công nghệ.
-
-Phân tích:
-- So sánh giá giữa các hệ thống
-- Nơi rẻ nhất
-- Có nên mua không
-
-Ngắn gọn, thực tế.
-`
-          },
-          {
-            role: "user",
-            content: `
-Sản phẩm: ${product}
-
-CellphoneS: ${prices.cellphones}
-FPT: ${prices.fpt}
-TGDĐ: ${prices.tgdd}
-Chợ Lớn: ${prices.cholon}
-`
-          }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_KEY}`
-        }
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
       }
-    );
-
-    return res.data.choices[0].message.content;
+    ]);
 
   } catch {
-    return "⚠️ Lỗi phân tích";
+    await pushLine(job.userId, [
+      { type: "text", text: "⚠️ Lỗi tạo ảnh" }
+    ]);
   }
+
+  runningUsers.delete(job.userId);
+
+  // chạy tiếp job khác
+  processQueue();
 }
 
 // ==========================
-// 🤖 CHAT
+// 🤖 AI CHAT
 // ==========================
 async function askAI(text, userId) {
   try {
@@ -180,14 +190,16 @@ async function askAI(text, userId) {
 }
 
 // ==========================
-// 📩 LINE
+// 📩 LINE API
 // ==========================
 async function replyLine(token, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
     { replyToken: token, messages },
     {
-      headers: { Authorization: `Bearer ${LINE_TOKEN}` }
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN}`
+      }
     }
   );
 }
@@ -197,7 +209,9 @@ async function pushLine(userId, messages) {
     "https://api.line.me/v2/bot/message/push",
     { to: userId, messages },
     {
-      headers: { Authorization: `Bearer ${LINE_TOKEN}` }
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN}`
+      }
     }
   );
 }
@@ -217,40 +231,30 @@ app.post("/webhook", async (req, res) => {
       const userId = event.source.userId;
       const replyToken = event.replyToken;
 
+      // 🚫 spam
       if (isSpam(userId)) continue;
+
+      // 🚫 block exact
+      if (isBlockedSilent(text)) return;
 
       saveMemory(userId, text);
 
-      // 📊 TECH MODE
-      if (isTech(text)) {
-        await replyLine(replyToken, [
-          { type: "text", text: "📊 Đang lấy giá realtime..." }
-        ]);
+      // 🎨 IMAGE
+      if (isImageRequest(text)) {
 
-        const prices = await getPrices(text);
-
-        if (!prices) {
-          await pushLine(userId, [
-            { type: "text", text: "❌ Không lấy được giá" }
+        // nếu queue quá tải
+        if (runningUsers.size >= MAX_USERS) {
+          await replyLine(replyToken, [
+            { type: "text", text: "⏳ Server đang bận, vui lòng thử lại..." }
           ]);
           continue;
         }
 
-        const result = await analyzePrice(text, prices);
-
-        const priceText = `
-📱 ${text}
-
-💰 CellphoneS: ${prices.cellphones.toLocaleString()}đ
-💰 FPT: ${prices.fpt.toLocaleString()}đ
-💰 TGDĐ: ${prices.tgdd.toLocaleString()}đ
-💰 Chợ Lớn: ${prices.cholon.toLocaleString()}đ
-`;
-
-        await pushLine(userId, [
-          { type: "text", text: priceText + "\n" + result }
+        await replyLine(replyToken, [
+          { type: "text", text: "🎨 Đang tạo ảnh..." }
         ]);
 
+        addJob(userId, text);
         continue;
       }
 
@@ -272,5 +276,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V27 REALTIME PRICE BOT RUNNING");
+  console.log("🚀 V27 IMAGE CONTROL RUNNING");
 });
