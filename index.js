@@ -12,111 +12,164 @@ const GROQ_KEY = process.env.GROQ_API_KEY;
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 📌 KEYWORD DATABASE (TỪ KHÓA CỐ ĐỊNH)
+// 📊 LOG HELPER (QUAN TRỌNG)
 // ==========================
-const KEYWORDS = {
-  "xin chào": "Xin chào bạn 👋 Mình có thể giúp gì cho bạn?",
-  "giá điện thoại": "Giá điện thoại tùy model, bạn muốn xem hãng nào?",
-  "giờ làm việc": "Cửa hàng làm việc từ 8:00 đến 21:00 mỗi ngày.",
-  "địa chỉ": "Cửa hàng ở Việt Nam, bạn cần chi nhánh nào?",
-  "hỗ trợ": "Mình sẵn sàng hỗ trợ bạn ngay bây giờ."
-};
+function log(title, data) {
+  console.log("\n==============================");
+  console.log("📌 " + title);
+  console.log("==============================");
+  console.log(data);
+  console.log("==============================\n");
+}
 
 // ==========================
 // 🧼 CLEAN TEXT
 // ==========================
 function cleanText(text = "") {
-  return text.replace(/[*#_>`~\-]/g, "").trim();
+  return text
+    .replace(/[*#_>`~\-]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ==========================
 // 📩 LINE REPLY
 // ==========================
 async function replyLine(replyToken, messages) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    { replyToken, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${LINE_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-}
-
-// ==========================
-// 🤖 GROQ AI
-// ==========================
-async function askGroq(text) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama3-70b-8192",
-      messages: [
-        {
-          role: "system",
-          content:
-            "Trả lời tiếng Việt rõ ràng, không markdown, dễ hiểu, ngắn gọn."
-        },
-        { role: "user", content: text }
-      ]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${GROQ_KEY}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// ==========================
-// 🔁 OPENROUTER BACKUP
-// ==========================
-async function askOpenRouter(text) {
-  const res = await axios.post(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      model: "deepseek/deepseek-chat",
-      messages: [{ role: "user", content: text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_KEY}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// ==========================
-// 🤖 AI FALLBACK
-// ==========================
-async function askAI(text) {
   try {
-    return await askGroq(text);
-  } catch (e) {
-    console.log("❌ Groq fail → OpenRouter");
-    try {
-      return await askOpenRouter(text);
-    } catch (e2) {
-      return "Hệ thống AI đang bận, vui lòng thử lại sau.";
-    }
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      { replyToken, messages },
+      {
+        headers: {
+          Authorization: `Bearer ${LINE_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 10000
+      }
+    );
+
+    log("LINE REPLY SUCCESS", messages);
+  } catch (err) {
+    log("LINE ERROR", {
+      status: err.response?.status,
+      data: err.response?.data,
+      message: err.message
+    });
   }
 }
 
 // ==========================
-// 🔍 CHECK KEYWORD
+// 🤖 GROQ AI (FULL DEBUG)
 // ==========================
-function findKeyword(text) {
-  const t = text.toLowerCase().trim();
+async function askGroq(text) {
+  try {
+    log("GROQ REQUEST", {
+      model: "llama3-70b-8192",
+      input: text
+    });
 
-  return KEYWORDS[t] || null;
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama3-70b-8192",
+        messages: [
+          {
+            role: "system",
+            content: "Trả lời tiếng Việt, không markdown, rõ ràng, ngắn gọn."
+          },
+          { role: "user", content: text }
+        ],
+        temperature: 0.7
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${GROQ_KEY}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 15000
+      }
+    );
+
+    log("GROQ RESPONSE", res.data);
+
+    return res.data.choices[0].message.content;
+
+  } catch (err) {
+    log("❌ GROQ ERROR DETAIL", {
+      status: err.response?.status,
+      statusText: err.response?.statusText,
+      data: err.response?.data,
+      message: err.message,
+      stack: err.stack
+    });
+
+    return null;
+  }
+}
+
+// ==========================
+// 🔁 OPENROUTER (FULL DEBUG)
+// ==========================
+async function askOpenRouter(text) {
+  try {
+    log("OPENROUTER REQUEST", {
+      model: "deepseek/deepseek-chat",
+      input: text
+    });
+
+    const res = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "deepseek/deepseek-chat",
+        messages: [{ role: "user", content: text }],
+        temperature: 0.7
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_KEY}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 15000
+      }
+    );
+
+    log("OPENROUTER RESPONSE", res.data);
+
+    return res.data.choices[0].message.content;
+
+  } catch (err) {
+    log("❌ OPENROUTER ERROR DETAIL", {
+      status: err.response?.status,
+      data: err.response?.data,
+      message: err.message
+    });
+
+    return null;
+  }
+}
+
+// ==========================
+// 🤖 AI ROUTER (SAFE)
+// ==========================
+async function askAI(text) {
+  let groq = await askGroq(text);
+
+  if (groq) {
+    log("AI SOURCE", "GROQ");
+    return groq;
+  }
+
+  log("AI SWITCH", "Groq fail → OpenRouter");
+
+  let or = await askOpenRouter(text);
+
+  if (or) {
+    log("AI SOURCE", "OPENROUTER");
+    return or;
+  }
+
+  return "⚠️ Hệ thống AI đang quá tải, vui lòng thử lại sau.";
 }
 
 // ==========================
@@ -124,6 +177,8 @@ function findKeyword(text) {
 // ==========================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
+
+  log("WEBHOOK EVENT", req.body);
 
   const events = req.body.events || [];
 
@@ -135,38 +190,19 @@ app.post("/webhook", async (req, res) => {
       const text = event.message.text;
       const replyToken = event.replyToken;
 
-      console.log("USER:", text);
+      log("USER MESSAGE", text);
 
-      // ==========================
-      // 🧠 1. CHECK KEYWORD TRƯỚC
-      // ==========================
-      const keywordReply = findKeyword(text);
-
-      if (keywordReply) {
-        await replyLine(replyToken, [
-          {
-            type: "text",
-            text: keywordReply
-          }
-        ]);
-        continue; // ❌ KHÔNG gọi AI
-      }
-
-      // ==========================
-      // 🤖 2. KHÔNG CÓ KEYWORD → AI
-      // ==========================
-      let aiText = await askAI(text);
-      aiText = cleanText(aiText);
+      const aiText = cleanText(await askAI(text));
 
       await replyLine(replyToken, [
-        {
-          type: "text",
-          text: aiText
-        }
+        { type: "text", text: aiText }
       ]);
 
     } catch (err) {
-      console.log("WEBHOOK ERROR:", err.message);
+      log("WEBHOOK ERROR", {
+        message: err.message,
+        stack: err.stack
+      });
     }
   }
 });
@@ -176,5 +212,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 KEYWORD + AI BOT RUNNING:", PORT);
+  console.log("🚀 DEBUG BOT RUNNING PORT:", PORT);
 });
