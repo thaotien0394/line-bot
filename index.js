@@ -1,8 +1,4 @@
-const express = require("express");
 const axios = require("axios");
-
-const app = express();
-app.use(express.json());
 
 // ==========================
 // 🔐 CONFIG
@@ -11,56 +7,48 @@ const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const HF_TOKEN = process.env.HUGGINGFACE_API_KEY;
 
 // ==========================
-// 📊 QUEUE SYSTEM
+// 🧠 AI CHAT (GROQ / OPENROUTER)
 // ==========================
-let queue = [];
-let running = 0;
-let MAX_CONCURRENT = 2;
+async function askAI(text) {
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.1-70b-versatile",
+        messages: [
+          { role: "system", content: "Bạn là trợ lý AI thông minh, trả lời tiếng Việt rõ ràng." },
+          { role: "user", content: text }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+        }
+      }
+    );
 
-// ==========================
-// 📈 STATS
-// ==========================
-let stats = {
-  total: 0,
-  done: 0,
-  fail: 0
-};
+    return res.data.choices[0].message.content;
+  } catch (e) {
+    // fallback OpenRouter
+    const res = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "deepseek/deepseek-chat",
+        messages: [{ role: "user", content: text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
+        }
+      }
+    );
 
-// ==========================
-// 👑 VIP USERS
-// ==========================
-const VIP_USERS = new Set([
-  "VIP_USER_ID_1",
-  "VIP_USER_ID_2"
-]);
-
-// ==========================
-// 🧠 AUTO SCALE ENGINE
-// ==========================
-function autoScale() {
-  const q = queue.length;
-
-  if (q > 20) MAX_CONCURRENT = 4;
-  else if (q > 10) MAX_CONCURRENT = 3;
-  else if (q > 5) MAX_CONCURRENT = 2;
-  else MAX_CONCURRENT = 1;
-
-  console.log(`⚙️ AUTO SCALE → workers = ${MAX_CONCURRENT} | queue = ${q}`);
+    return res.data.choices[0].message.content;
+  }
 }
 
 // ==========================
-// 🧠 PROMPT ENGINE
-// ==========================
-function enhancePrompt(prompt) {
-  return `
-ultra detailed, cinematic lighting, masterpiece, 8k, sharp focus,
-${prompt},
-professional digital art, trending on artstation
-  `.trim();
-}
-
-// ==========================
-// 🎨 IMAGE AI
+// 🎨 IMAGE ENGINE
 // ==========================
 async function generateImage(prompt) {
   const res = await axios.post(
@@ -79,10 +67,40 @@ async function generateImage(prompt) {
 }
 
 // ==========================
-// 🎨 FALLBACK IMAGE
+// 🧠 MULTI ACTION PARSER
 // ==========================
-function fallbackImage(prompt) {
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
+function parseMultiAction(text) {
+  const t = text.toLowerCase();
+
+  let actions = {
+    chat: null,
+    image: null
+  };
+
+  // 🎨 IMAGE DETECT
+  const imageKeywords = ["vẽ", "render", "tạo ảnh", "draw", "anime", "chibi"];
+
+  const hasImage = imageKeywords.some(k => t.includes(k));
+
+  if (hasImage) {
+    actions.image = text;
+  }
+
+  // 💬 CHAT ALWAYS EXTRACT MAIN IDEA
+  actions.chat = text;
+
+  return actions;
+}
+
+// ==========================
+// 🧠 CLEAN TEXT
+// ==========================
+function formatText(text = "") {
+  return text
+    .replace(/\*/g, "")
+    .replace(/##/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ==========================
@@ -102,136 +120,103 @@ async function replyLine(token, messages) {
 }
 
 // ==========================
-// 📊 DASHBOARD
+// 🚀 HANDLE MULTI ACTION
 // ==========================
-app.get("/dashboard", (req, res) => {
-  res.json({
-    queue: queue.length,
-    running,
-    workers: MAX_CONCURRENT,
-    stats
-  });
-});
+async function handleMessage(event) {
+  const text = event.message?.text;
+  const replyToken = event.replyToken;
 
-// ==========================
-// 📥 ADD QUEUE (VIP PRIORITY)
-// ==========================
-function addQueue(job) {
-  stats.total++;
+  if (!text) return;
 
-  if (job.vip) queue.unshift(job);
-  else queue.push(job);
+  const actions = parseMultiAction(text);
 
-  autoScale();
-  processQueue();
-}
+  console.log("🧠 ACTIONS:", actions);
 
-// ==========================
-// ⚙️ QUEUE PROCESSOR
-// ==========================
-async function processQueue() {
-  autoScale();
+  let messages = [];
 
-  if (running >= MAX_CONCURRENT) return;
-  if (queue.length === 0) return;
+  // ==========================
+  // 💬 CHAT
+  // ==========================
+  if (actions.chat) {
+    try {
+      const ai = await askAI(actions.chat);
 
-  const job = queue.shift();
-  running++;
-
-  try {
-    await handleJob(job);
-    stats.done++;
-  } catch (e) {
-    stats.fail++;
-    console.log("JOB ERROR:", e.message);
+      messages.push({
+        type: "text",
+        text: formatText(ai)
+      });
+    } catch (e) {
+      messages.push({
+        type: "text",
+        text: "⚠️ AI chat lỗi"
+      });
+    }
   }
 
-  running--;
-  processQueue();
-}
-
-// ==========================
-// 🎯 HANDLE JOB
-// ==========================
-async function handleJob(job) {
-  const { text, replyToken } = job;
-
-  await replyLine(replyToken, [
-    {
+  // ==========================
+  // 🎨 IMAGE (QUEUE SAFE)
+  // ==========================
+  if (actions.image) {
+    messages.push({
       type: "text",
-      text: `⏳ Render... Queue: ${queue.length} | Workers: ${MAX_CONCURRENT}`
-    }
-  ]);
+      text: "🎨 Đang tạo ảnh..."
+    });
 
-  const prompt = enhancePrompt(text);
+    // chạy async không block chat
+    generateImage(actions.image)
+      .then(img => {
+        const base64 = img.toString("base64");
+        const url = `data:image/png;base64,${base64}`;
 
-  try {
-    const img = await generateImage(prompt);
+        return replyLine(replyToken, [
+          {
+            type: "image",
+            originalContentUrl: url,
+            previewImageUrl: url
+          }
+        ]);
+      })
+      .catch(() => {
+        return replyLine(replyToken, [
+          { type: "text", text: "⚠️ Lỗi tạo ảnh" }
+        ]);
+      });
+  }
 
-    const base64 = img.toString("base64");
-    const url = `data:image/png;base64,${base64}`;
-
-    await replyLine(replyToken, [
-      { type: "text", text: "🎨 V10 render complete" },
-      {
-        type: "image",
-        originalContentUrl: url,
-        previewImageUrl: url
-      }
-    ]);
-  } catch (e) {
-    console.log("AI FAIL → FALLBACK");
-
-    const url = fallbackImage(prompt);
-
-    await replyLine(replyToken, [
-      { type: "text", text: "⚠️ Fallback image used" },
-      {
-        type: "image",
-        originalContentUrl: url,
-        previewImageUrl: url
-      }
-    ]);
+  // ==========================
+  // 📩 REPLY CHAT FIRST
+  // ==========================
+  if (messages.length > 0) {
+    await replyLine(replyToken, messages);
   }
 }
 
 // ==========================
 // 🔗 WEBHOOK
 // ==========================
+const express = require("express");
+const app = express();
+app.use(express.json());
+
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  const events = req.body.events || [];
-
-  for (const event of events) {
+  for (const event of req.body.events || []) {
     try {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      const text = event.message.text;
-      const userId = event.source?.userId;
-      const replyToken = event.replyToken;
-
-      const isVip = VIP_USERS.has(userId);
-
-      addQueue({
-        text,
-        replyToken,
-        vip: isVip,
-        time: Date.now(),
-        userId
-      });
+      await handleMessage(event);
 
     } catch (err) {
-      console.log("WEBHOOK ERROR:", err.message);
+      console.log("ERROR:", err.message);
     }
   }
 });
 
 // ==========================
-// 🚀 START SERVER
+// 🚀 START
 // ==========================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("🚀 MIDJOURNEY V10 AUTO SCALE RUNNING:", PORT);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 V18 GOD BRAIN RUNNING");
 });
