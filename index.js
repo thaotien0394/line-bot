@@ -12,17 +12,37 @@ const GROQ_KEY = process.env.GROQ_API_KEY;
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 🚫 CHỐNG SPAM (20 USER)
+// 📌 KEYWORD DATABASE (TỪ KHÓA CỐ ĐỊNH)
 // ==========================
-const userCount = new Map();
-const MAX_USERS = 20;
+const KEYWORDS = {
+  "xin chào": "Xin chào bạn 👋 Mình có thể giúp gì cho bạn?",
+  "giá điện thoại": "Giá điện thoại tùy model, bạn muốn xem hãng nào?",
+  "giờ làm việc": "Cửa hàng làm việc từ 8:00 đến 21:00 mỗi ngày.",
+  "địa chỉ": "Cửa hàng ở Việt Nam, bạn cần chi nhánh nào?",
+  "hỗ trợ": "Mình sẵn sàng hỗ trợ bạn ngay bây giờ."
+};
 
-function checkUserLimit(userId) {
-  if (!userCount.has(userId)) {
-    if (userCount.size >= MAX_USERS) return false;
-    userCount.set(userId, 1);
-  }
-  return true;
+// ==========================
+// 🧼 CLEAN TEXT
+// ==========================
+function cleanText(text = "") {
+  return text.replace(/[*#_>`~\-]/g, "").trim();
+}
+
+// ==========================
+// 📩 LINE REPLY
+// ==========================
+async function replyLine(replyToken, messages) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    { replyToken, messages },
+    {
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
 }
 
 // ==========================
@@ -32,22 +52,21 @@ async function askGroq(text) {
   const res = await axios.post(
     "https://api.groq.com/openai/v1/chat/completions",
     {
-      model: "llama3-70b-8192", // ✅ FIX MODEL MỚI
+      model: "llama3-70b-8192",
       messages: [
         {
           role: "system",
-          content: "Bạn là trợ lý AI tư vấn bán hàng chuyên nghiệp, trả lời ngắn gọn, dễ hiểu."
+          content:
+            "Trả lời tiếng Việt rõ ràng, không markdown, dễ hiểu, ngắn gọn."
         },
         { role: "user", content: text }
-      ],
-      temperature: 0.7
+      ]
     },
     {
       headers: {
         Authorization: `Bearer ${GROQ_KEY}`,
         "Content-Type": "application/json"
-      },
-      timeout: 15000
+      }
     }
   );
 
@@ -62,15 +81,13 @@ async function askOpenRouter(text) {
     "https://openrouter.ai/api/v1/chat/completions",
     {
       model: "deepseek/deepseek-chat",
-      messages: [{ role: "user", content: text }],
-      temperature: 0.7
+      messages: [{ role: "user", content: text }]
     },
     {
       headers: {
         Authorization: `Bearer ${OPENROUTER_KEY}`,
         "Content-Type": "application/json"
-      },
-      timeout: 15000
+      }
     }
   );
 
@@ -78,56 +95,36 @@ async function askOpenRouter(text) {
 }
 
 // ==========================
-// 🤖 AI AUTO (KHÔNG CHẾT)
+// 🤖 AI FALLBACK
 // ==========================
 async function askAI(text) {
   try {
-    console.log("👉 Groq");
     return await askGroq(text);
   } catch (e) {
-    console.log("❌ Groq lỗi → OpenRouter");
-
+    console.log("❌ Groq fail → OpenRouter");
     try {
       return await askOpenRouter(text);
     } catch (e2) {
-      console.log("❌ OpenRouter lỗi");
-      return "⚠️ AI đang bận, vui lòng thử lại sau ít phút.";
+      return "Hệ thống AI đang bận, vui lòng thử lại sau.";
     }
   }
 }
 
 // ==========================
-// 🎨 AI TẠO ẢNH FREE
+// 🔍 CHECK KEYWORD
 // ==========================
-function generateImage(prompt) {
-  // Pollinations AI (free, không cần key)
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
-}
+function findKeyword(text) {
+  const t = text.toLowerCase().trim();
 
-// ==========================
-// 📩 GỬI LINE MESSAGE
-// ==========================
-async function replyLine(replyToken, messages) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken,
-      messages
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${LINE_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 10000
-    }
-  );
+  return KEYWORDS[t] || null;
 }
 
 // ==========================
 // 🔗 WEBHOOK
 // ==========================
 app.post("/webhook", async (req, res) => {
+  res.sendStatus(200);
+
   const events = req.body.events || [];
 
   for (const event of events) {
@@ -137,58 +134,41 @@ app.post("/webhook", async (req, res) => {
 
       const text = event.message.text;
       const replyToken = event.replyToken;
-      const userId = event.source?.userId || "unknown";
 
-      console.log("👤 User:", text);
+      console.log("USER:", text);
 
-      // 🚫 check limit
-      if (!checkUserLimit(userId)) {
+      // ==========================
+      // 🧠 1. CHECK KEYWORD TRƯỚC
+      // ==========================
+      const keywordReply = findKeyword(text);
+
+      if (keywordReply) {
         await replyLine(replyToken, [
           {
             type: "text",
-            text: "⚠️ Bot đã đạt giới hạn người dùng, vui lòng quay lại sau."
+            text: keywordReply
           }
         ]);
-        continue;
+        continue; // ❌ KHÔNG gọi AI
       }
 
-      // 🤖 AI
+      // ==========================
+      // 🤖 2. KHÔNG CÓ KEYWORD → AI
+      // ==========================
       let aiText = await askAI(text);
+      aiText = cleanText(aiText);
 
-      // 🎯 tách ảnh
-      let imagePrompt = null;
-
-      if (aiText.includes("IMAGE_PROMPT:")) {
-        const parts = aiText.split("IMAGE_PROMPT:");
-        aiText = parts[0].trim();
-        imagePrompt = parts[1].trim();
-      }
-
-      const messages = [
+      await replyLine(replyToken, [
         {
           type: "text",
           text: aiText
         }
-      ];
+      ]);
 
-      // 🎨 tạo ảnh nếu có prompt
-      if (imagePrompt) {
-        const imgUrl = generateImage(imagePrompt);
-
-        messages.push({
-          type: "image",
-          originalContentUrl: imgUrl,
-          previewImageUrl: imgUrl
-        });
-      }
-
-      await replyLine(replyToken, messages);
     } catch (err) {
-      console.error("❌ WEBHOOK ERROR:", err.message);
+      console.log("WEBHOOK ERROR:", err.message);
     }
   }
-
-  res.sendStatus(200);
 });
 
 // ==========================
@@ -196,5 +176,5 @@ app.post("/webhook", async (req, res) => {
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("✅ BOT RUNNING ON PORT " + PORT);
+  console.log("🚀 KEYWORD + AI BOT RUNNING:", PORT);
 });
