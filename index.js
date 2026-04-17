@@ -1,14 +1,16 @@
-require("dotenv").config();
-
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 
-// 🔐 LẤY TỪ ENV
+// 🔐 LẤY TỪ RAILWAY VARIABLES
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+// 🔥 LOG KIỂM TRA
+console.log("KEY:", GEMINI_API_KEY ? "OK" : "MISSING");
+console.log("LINE TOKEN:", CHANNEL_ACCESS_TOKEN ? "OK" : "MISSING");
 
 // ⚙️ CONFIG
 const DAILY_LIMIT = 10;
@@ -18,8 +20,6 @@ const MAX_USERS = 20;
 // 🧠 RAM
 const userUsage = {};
 const allowedUsers = new Set();
-
-console.log("🚀 BOT ĐANG CHẠY (ENV MODE)");
 
 // ==========================
 // 🧠 CHECK USER
@@ -65,7 +65,7 @@ function checkUser(userId) {
 }
 
 // ==========================
-// 🤖 GEMINI (MODEL MỚI)
+// 🤖 GEMINI
 // ==========================
 async function askGemini(text) {
   try {
@@ -79,7 +79,7 @@ async function askGemini(text) {
     return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "⚠️ Không có phản hồi";
   } catch (err) {
     console.error("❌ Gemini:", err.response?.data || err.message);
-    return "⚠️ AI đang bận, thử lại sau";
+    return "⚠️ AI lỗi hoặc hết quota";
   }
 }
 
@@ -118,6 +118,8 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const text = event.message.text;
 
+      console.log("👤 User:", text);
+
       const check = checkUser(userId);
       if (!check.ok) {
         await replyLine(replyToken, check.msg);
@@ -125,6 +127,9 @@ app.post("/webhook", async (req, res) => {
       }
 
       const ai = await askGemini(text);
+
+      console.log("🤖 AI:", ai);
+
       await replyLine(replyToken, ai);
     }
   }
