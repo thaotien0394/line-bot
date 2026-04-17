@@ -11,20 +11,12 @@ const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
 // ==========================
-// 🧠 MEMORY USER
-// ==========================
-let userMemory = {};
-
-// ==========================
-// 📦 QUEUE
+// 📦 QUEUE IMAGE
 // ==========================
 let queue = [];
 let running = 0;
 let MAX = 2;
 
-// ==========================
-// ⚡ AUTO SCALE
-// ==========================
 function autoScale() {
   if (queue.length > 10) MAX = 3;
   else if (queue.length > 5) MAX = 2;
@@ -32,72 +24,53 @@ function autoScale() {
 }
 
 // ==========================
-// 🧠 ANALYZE INTENT
+// 🧠 TRUE AI INTENT
 // ==========================
-function analyzeIntent(text = "") {
-  const t = text.toLowerCase().trim();
+async function detectIntentAI(text) {
+  try {
+    const res = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "deepseek/deepseek-chat",
+        messages: [
+          { role: "system", content: INTENT_PROMPT },
+          { role: "user", content: text }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-  let scoreImage = 0;
-  let scoreChat = 0;
+    const content = res.data.choices[0].message.content;
 
-  const imageSignals = [
-    "vẽ", "render", "tạo", "draw", "generate",
-    "anime", "chibi", "3d", "ảnh", "hình"
-  ];
+    // parse JSON an toàn
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) return "CHAT";
 
-  const chatSignals = [
-    "là gì", "tại sao", "bao nhiêu",
-    "cách", "hướng dẫn", "tư vấn", "?"
-  ];
+    const json = JSON.parse(match[0]);
 
-  imageSignals.forEach(k => {
-    if (t.includes(k)) scoreImage += 2;
-  });
+    if (json.intent === "IMAGE") return "IMAGE";
+    return "CHAT";
 
-  chatSignals.forEach(k => {
-    if (t.includes(k)) scoreChat += 2;
-  });
-
-  if (t.split(" ").length <= 5) scoreImage += 1;
-  if (t.split(" ").length > 8) scoreChat += 1;
-
-  const diff = scoreImage - scoreChat;
-
-  if (diff >= 2) return "IMAGE";
-  if (diff <= -2) return "CHAT";
-
-  return "AMBIGUOUS";
+  } catch (e) {
+    console.log("INTENT AI ERROR:", e.message);
+    return "CHAT"; // ❗ fallback an toàn
+  }
 }
 
 // ==========================
-// 🧠 DECIDE WITH MEMORY
-// ==========================
-function decideIntent(userId, text) {
-  const base = analyzeIntent(text);
-
-  if (base !== "AMBIGUOUS") {
-    userMemory[userId] = base;
-    return base;
-  }
-
-  if (userMemory[userId]) {
-    return userMemory[userId];
-  }
-
-  if (text.length < 20) return "IMAGE";
-
-  return "ASK";
-}
-
-// ==========================
-// 🎨 IMAGE URL
+// 🎨 IMAGE
 // ==========================
 function imageUrl(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux`;
 }
 
 // ==========================
-// 📩 LINE API
+// 📩 LINE
 // ==========================
 async function replyLine(token, messages) {
   await axios.post(
@@ -126,7 +99,7 @@ async function pushLine(userId, messages) {
 }
 
 // ==========================
-// 💬 AI CHAT
+// 💬 CHAT AI
 // ==========================
 async function askAI(text) {
   try {
@@ -134,7 +107,13 @@ async function askAI(text) {
       "https://openrouter.ai/api/v1/chat/completions",
       {
         model: "deepseek/deepseek-chat",
-        messages: [{ role: "user", content: text }]
+        messages: [
+          {
+            role: "system",
+            content: "Trả lời tiếng Việt rõ ràng, có gạch đầu dòng, viết đẹp."
+          },
+          { role: "user", content: text }
+        ]
       },
       {
         headers: {
@@ -145,13 +124,14 @@ async function askAI(text) {
     );
 
     return res.data.choices[0].message.content;
+
   } catch (e) {
     return "⚠️ AI đang bận";
   }
 }
 
 // ==========================
-// 🧹 FORMAT TEXT
+// 🧹 FORMAT
 // ==========================
 function formatText(text = "") {
   return text
@@ -161,7 +141,7 @@ function formatText(text = "") {
 }
 
 // ==========================
-// 📦 QUEUE SYSTEM
+// 📦 QUEUE
 // ==========================
 function addQueue(job) {
   queue.push(job);
@@ -213,9 +193,10 @@ app.post("/webhook", async (req, res) => {
 
       console.log("USER:", text);
 
-      const intent = decideIntent(userId, text);
+      // 🧠 AI quyết định
+      const intent = await detectIntentAI(text);
 
-      console.log("🧠 INTENT:", intent);
+      console.log("🧠 INTENT AI:", intent);
 
       // ==========================
       // 🎨 IMAGE
@@ -236,29 +217,11 @@ app.post("/webhook", async (req, res) => {
       // ==========================
       // 💬 CHAT
       // ==========================
-      if (intent === "CHAT") {
-        const ai = await askAI(text);
+      const ai = await askAI(text);
 
-        await replyLine(replyToken, [
-          { type: "text", text: formatText(ai) }
-        ]);
-
-        continue;
-      }
-
-      // ==========================
-      // ⚠️ ASK (MƠ HỒ)
-      // ==========================
-      if (intent === "ASK") {
-        await replyLine(replyToken, [
-          {
-            type: "text",
-            text: "🤖 Bạn muốn mình tạo ảnh hay giải thích?"
-          }
-        ]);
-
-        continue;
-      }
+      await replyLine(replyToken, [
+        { type: "text", text: formatText(ai) }
+      ]);
 
     } catch (err) {
       console.log("ERROR:", err.message);
@@ -267,9 +230,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ==========================
-// 🚀 START SERVER
+// 🚀 START
 // ==========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V21 HUMAN AI RUNNING");
+  console.log("🚀 V22 TRUE AI RUNNING");
 });
