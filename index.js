@@ -17,24 +17,14 @@ const CLOUDINARY_URL = process.env.CLOUDINARY_URL || "";
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || "";
 
 /* =========================
-   🚀 LOG HELPER (DEBUG FULL)
+   🚀 LOG DEBUG
 ========================= */
 function logError(source, err) {
   console.log("====================");
-  console.log("❌ ERROR SOURCE:", source);
-
-  if (err?.response) {
-    console.log("STATUS:", err.response.status);
-    console.log("DATA:", err.response.data);
-  } else {
-    console.log("MESSAGE:", err.message);
-  }
-
+  console.log("❌ ERROR:", source);
+  console.log(err?.response?.status || "NO_STATUS");
+  console.log(err?.response?.data || err.message);
   console.log("====================");
-}
-
-function logInfo(title, data) {
-  console.log("🧠", title, data);
 }
 
 /* =========================
@@ -78,16 +68,37 @@ function rateLimit(userId) {
 }
 
 /* =========================
-   🧠 AI PROVIDERS (AUTO SWITCH)
+   🧠 AI MULTI ROUTER (V50 OPTIMIZER)
+   🚀 LATENCY + PARALLEL + AUTO OPTIMIZE
 ========================= */
-async function openRouter(text, system) {
-  try {
-    if (!OPENROUTER_KEY) throw new Error("Missing OPENROUTER_KEY");
 
+const modelStats = new Map();
+
+const MODELS = {
+  logic: [
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "openchat/openchat-7b:free"
+  ],
+  chat: [
+    "openchat/openchat-7b:free",
+    "gryphe/mythomax-l2-13b"
+  ]
+};
+
+function detectTask(text) {
+  const t = text.toLowerCase();
+  if (t.includes("tại sao") || t.includes("phân tích") || t.includes("logic") || t.includes("giải thích")) return "logic";
+  return "chat";
+}
+
+async function callModel(model, text, system) {
+  const start = Date.now();
+
+  try {
     const res = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "mistralai/mistral-7b-instruct",
+        model,
         messages: [
           { role: "system", content: system },
           { role: "user", content: text }
@@ -96,17 +107,47 @@ async function openRouter(text, system) {
       { headers: { Authorization: `Bearer ${OPENROUTER_KEY}` }, timeout: 12000 }
     );
 
-    return res.data?.choices?.[0]?.message?.content;
+    const latency = Date.now() - start;
+    modelStats.set(model, latency);
+
+    return {
+      text: res.data?.choices?.[0]?.message?.content,
+      latency
+    };
 
   } catch (err) {
-    logError("OPENROUTER", err);
-    return null;
+    logError("OPENROUTER:" + model, err);
+
+    if (err?.response?.status === 404) return { text: null, fail: true };
+
+    return { text: null };
   }
 }
 
-async function huggingFace(text) {
+async function optimizeAI(text, system, type) {
+  const list = MODELS[type] || MODELS.chat;
+
+  // 🚀 RUN PARALLEL ALL MODELS
+  const tasks = list.map(m => callModel(m, text, system));
+
+  const results = await Promise.all(tasks);
+
+  // ⚡ filter valid
+  const valid = results
+    .filter(r => r && r.text && !r.fail)
+    .sort((a, b) => a.latency - b.latency);
+
+  if (valid.length > 0) {
+    const best = valid[0];
+    return best.text;
+  }
+
+  return null;
+}
+
+async function hfFallback(text) {
   try {
-    if (!HF_KEY) throw new Error("Missing HF_KEY");
+    if (!HF_KEY) return null;
 
     const res = await axios.post(
       "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
@@ -117,76 +158,70 @@ async function huggingFace(text) {
     return res.data?.[0]?.generated_text || null;
 
   } catch (err) {
-    logError("HUGGINGFACE", err);
+    logError("HF", err);
     return null;
   }
 }
 
-async function simpleFallback(text) {
-  logInfo("FALLBACK_SIMPLE", text);
-  return "🤖 Hệ thống đang quá tải, vui lòng thử lại sau";
-}
-
-/* =========================
-   🧠 AI ROUTER (SMART SWITCH)
-========================= */
 async function aiRouter(userId, text) {
   const mem = getMemory(userId);
+  const type = detectTask(text);
 
-  const system = `AI LOGIC MODE:\n- ngắn gọn\n- đúng trọng tâm\n- suy luận rõ ràng\nHistory: ${JSON.stringify(mem.history.slice(-5))}`;
+  const system = `AI V50 OPTIMIZER MODE:
+- logic chuẩn
+- trả lời ngắn gọn
+- tối ưu tốc độ
+History:${JSON.stringify(mem.history.slice(-5))}`;
 
-  logInfo("AI REQUEST", { userId, text });
+  logInfo("AI V50 REQUEST", { userId, type });
 
-  let result = await openRouter(text, system);
+  // 🚀 1. OPTIMIZED PARALLEL OPENROUTER
+  let result = await optimizeAI(text, system, type);
 
+  // 🔁 2. HF FALLBACK
   if (!result) {
-    logInfo("SWITCH TO HF", "OpenRouter failed");
-    result = await huggingFace(text);
+    logInfo("SWITCH HF", "OpenRouter all failed");
+    result = await hfFallback(text);
   }
 
+  // 🧯 3. SAFE MODE
   if (!result) {
-    logInfo("SWITCH TO SIMPLE", "HF failed");
-    result = await simpleFallback(text);
+    result = "🤖 AI đang quá tải, thử lại sau";
   }
 
-  return `🧠 Ý chính:\n➡️ ${result}\n\n💡 Tóm tắt:\n- logic rõ ràng\n- dễ hiểu`;
+  return `🧠 Ý chính:
+➡️ ${result}
+
+💡 Tóm tắt:
+- tối ưu tốc độ
+- logic rõ ràng`;
 }
 
 /* =========================
-   🌐 SEARCH
+   🌐 OTHER FUNCTIONS (GIỮ NGUYÊN)
+========================= */ (GIỮ NGUYÊN)
 ========================= */
 async function search(query) {
   try {
     if (!SERP_API_KEY) return "No key";
-
     const res = await axios.get("https://serpapi.com/search", {
       params: { q: query, api_key: SERP_API_KEY }
     });
-
     return res.data?.organic_results?.[0]?.snippet || "No result";
-
-  } catch (err) {
-    logError("SEARCH", err);
+  } catch {
     return "Search error";
   }
 }
 
-/* =========================
-   📰 NEWS
-========================= */
 async function news() {
   try {
     const res = await axios.get(`https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&country=vn`);
     return res.data?.results?.[0]?.title || "No news";
-  } catch (err) {
-    logError("NEWS", err);
+  } catch {
     return "News error";
   }
 }
 
-/* =========================
-   🎨 IMAGE (SAFE)
-========================= */
 async function image(prompt) {
   try {
     if (!HF_KEY) return null;
@@ -282,5 +317,5 @@ app.post("/webhook", async (req, res) => {
    🚀 START
 ========================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 V45/V46 DEBUG STABLE AI RUNNING");
+  console.log("🚀 V49 AI MULTI ROUTE STABLE RUNNING");
 });
