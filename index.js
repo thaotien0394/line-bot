@@ -5,195 +5,243 @@ const app = express();
 app.use(express.json());
 
 /* =========================
-   🔐 ENV KEYS SAFE CHECK
+   🔐 ENV KEYS
 ========================= */
-const OPENROUTER_KEY = process.env.OPENROUTER_KEY || "";
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || "";
 const HF_KEY = process.env.HF_KEY || "";
-const STABILITY_KEY = process.env.STABILITY_KEY || "";
-const REPLICATE_KEY = process.env.REPLICATE_KEY || "";
 const CHANNEL_TOKEN = process.env.CHANNEL_TOKEN || "";
+const SERP_API_KEY = process.env.SERP_API_KEY || "";
+const NEWSDATA_KEY = process.env.NEWSDATA_KEY || "";
+const CLOUDINARY_URL = process.env.CLOUDINARY_URL || "";
 
 /* =========================
-   ⚡ SAFE SERVER HEALTH
+   🚫 BLOCK LIST FILTER (NO RESPONSE)
 ========================= */
-app.get("/", (req, res) => {
-  res.send("V40 BOT OK");
-});
+const BLOCK_LIST = [
+  "KEY",
+  "RS",
+  "CTKM",
+  "MT",
+  "HD",
+  "BOT",
+  "LAPTOP",
+  "MÙA NÓNG",
+  "PV",
+  "8NTTT",
+  "TRACHAM",
+  "BB",
+  "CAMERA"
+];
+
+function isBlocked(text) {
+  if (!text) return false;
+  const t = text.trim().toUpperCase();
+  return BLOCK_LIST.includes(t);
+}
 
 /* =========================
-   🧠 CACHE
+   🚀 HEALTH
+========================= */
+app.get("/", (req, res) => res.send("V43 GOD MODE AI RUNNING"));
+
+/* =========================
+   🧠 MEMORY (USER PERSONALITY)
+========================= */
+const memory = new Map();
+
+function getMemory(userId) {
+  if (!memory.has(userId)) memory.set(userId, { history: [], style: "normal" });
+  return memory.get(userId);
+}
+
+function updateMemory(userId, text, reply) {
+  const mem = getMemory(userId);
+  mem.history.push({ text, reply });
+  if (mem.history.length > 20) mem.history.shift();
+}
+
+/* =========================
+   ⚡ CACHE + RATE LIMIT
 ========================= */
 const cache = new Map();
-
-/* =========================
-   🚦 RATE LIMIT
-========================= */
 const userTime = new Map();
 
 function rateLimit(userId) {
   const now = Date.now();
   const last = userTime.get(userId) || 0;
-
-  if (now - last < 1500) return false;
-
+  if (now - last < 900) return false;
   userTime.set(userId, now);
   return true;
 }
 
 /* =========================
-   🧠 AI SAFE CALL
+   🧠 MULTI AI ROUTER
 ========================= */
-async function askAI(text) {
-  if (cache.has(text)) return cache.get(text);
-
+async function callOpenRouter(text, system) {
   try {
-    if (!OPENROUTER_KEY) return "⚠️ AI chưa cấu hình API KEY";
-
     const res = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         model: "mistralai/mistral-7b-instruct",
         messages: [
-          { role: "system", content: "Bạn là AI thông minh, trả lời ngắn gọn." },
+          { role: "system", content: system },
           { role: "user", content: text }
         ]
       },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_KEY}`
-        },
-        timeout: 12000
-      }
+      { headers: { Authorization: `Bearer ${OPENROUTER_KEY}` } }
     );
+    return res.data?.choices?.[0]?.message?.content;
+  } catch {
+    return null;
+  }
+}
 
-    const result =
-      res.data?.choices?.[0]?.message?.content || "❌ AI lỗi";
+async function aiRouter(userId, text) {
+  const mem = getMemory(userId);
 
-    cache.set(text, result);
-    return result;
+  const system = `
+Bạn là AI GOD MODE:
+- logic mạnh
+- realtime
+- trả lời ngắn gọn
+- ưu tiên ý chính
+- nhớ ngữ cảnh user
+Lịch sử: ${JSON.stringify(mem.history.slice(-5))}
+`;
 
-  } catch (e) {
-    return "❌ AI đang bận";
+  let result = await callOpenRouter(text, system);
+  if (!result) result = "⚠️ AI fallback failed";
+
+  return format(result);
+}
+
+/* =========================
+   ✨ FORMAT OUTPUT
+========================= */
+function format(text) {
+  return `🧠 Ý chính:\n➡️ ${text}\n\n💡 Tóm tắt:\n- Ngắn gọn\n- Dễ hiểu\n- Có logic`;
+}
+
+/* =========================
+   🌐 SEARCH
+========================= */
+async function search(query) {
+  try {
+    if (!SERP_API_KEY) return "❌ No search key";
+    const res = await axios.get("https://serpapi.com/search", {
+      params: { q: query, api_key: SERP_API_KEY }
+    });
+    return res.data?.organic_results?.[0]?.snippet || "No result";
+  } catch {
+    return "Search error";
   }
 }
 
 /* =========================
-   🎨 IMAGE SAFE (FALLBACK)
+   📰 NEWS
 ========================= */
-async function generateImage(prompt) {
+async function news() {
   try {
-    if (HF_KEY) {
-      const res = await axios.post(
-        "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
-        { inputs: prompt },
-        {
-          headers: { Authorization: `Bearer ${HF_KEY}` },
-          responseType: "arraybuffer",
-          timeout: 20000
-        }
-      );
-
-      return Buffer.from(res.data).toString("base64");
-    }
-  } catch {}
-
-  return null;
+    const res = await axios.get(`https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&country=vn`);
+    return res.data?.results?.[0]?.title || "No news";
+  } catch {
+    return "News error";
+  }
 }
 
 /* =========================
-   🧠 INTENT DETECTOR
+   🎨 IMAGE
 ========================= */
-function detectIntent(text) {
+async function image(prompt) {
+  try {
+    if (!HF_KEY) return null;
+
+    const res = await axios.post(
+      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+      { inputs: prompt },
+      { headers: { Authorization: `Bearer ${HF_KEY}` }, responseType: "arraybuffer" }
+    );
+
+    const base64 = Buffer.from(res.data).toString("base64");
+    return `data:image/png;base64,${base64}`;
+
+  } catch {
+    return null;
+  }
+}
+
+/* =========================
+   🧠 INTENT
+========================= */
+function intent(text) {
   const t = text.toLowerCase();
   if (t.includes("vẽ") || t.includes("ảnh")) return "IMAGE";
+  if (t.includes("tin")) return "NEWS";
+  if (t.includes("tìm")) return "SEARCH";
   return "CHAT";
 }
 
 /* =========================
-   ⚙️ MAIN LOGIC SAFE
+   ⚙️ HANDLER
 ========================= */
 async function handle(userId, text) {
-  if (!text) return "❌ Không có nội dung";
+  if (!rateLimit(userId)) return "⛔ Spam detected";
 
-  if (!rateLimit(userId)) {
-    return "⛔ Gửi quá nhanh, chờ 2 giây";
-  }
+  const type = intent(text);
 
-  const intent = detectIntent(text);
+  if (type === "IMAGE") return { type: "image", data: await image(text) };
+  if (type === "SEARCH") return await search(text);
+  if (type === "NEWS") return await news();
 
-  if (intent === "IMAGE") {
-    const img = await generateImage(text);
-    if (!img) return "❌ Không tạo được ảnh";
-
-    return {
-      type: "image",
-      data: img
-    };
-  }
-
-  return await askAI(text);
+  return await aiRouter(userId, text);
 }
 
 /* =========================
-   🌐 WEBHOOK SAFE 100% (NO 502)
+   🌐 WEBHOOK
 ========================= */
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // ⚠️ QUAN TRỌNG: trả ngay để tránh LINE timeout
+  res.sendStatus(200);
 
   try {
-    const event = req.body?.events?.[0];
-    if (!event) return;
+    const e = req.body?.events?.[0];
+    if (!e) return;
 
-    const text = event.message?.text;
-    const userId = event.source?.userId;
-    const replyToken = event.replyToken;
+    const text = e.message?.text;
+    const userId = e.source?.userId;
+    const replyToken = e.replyToken;
 
     if (!text || !replyToken) return;
 
-    const result = await handle(userId, text);
+    /* 🚫 BLOCK FILTER (NO RESPONSE) */
+    if (isBlocked(text)) return;
 
-    let message;
+    const result = await handle(userId, text);
+    let msg;
 
     if (typeof result === "object" && result.type === "image") {
-      message = {
-        type: "image",
-        originalContentUrl: `data:image/png;base64,${result.data}`,
-        previewImageUrl: `data:image/png;base64,${result.data}`
-      };
+      msg = { type: "image", originalContentUrl: result.data, previewImageUrl: result.data };
     } else {
-      message = {
-        type: "text",
-        text: result
-      };
+      msg = { type: "text", text: result };
     }
 
-    if (!CHANNEL_TOKEN) return;
+    if (CHANNEL_TOKEN) {
+      await axios.post(
+        "https://api.line.me/v2/bot/message/reply",
+        { replyToken, messages: [msg] },
+        { headers: { Authorization: `Bearer ${CHANNEL_TOKEN}` } }
+      );
+    }
 
-    await axios.post(
-      "https://api.line.me/v2/bot/message/reply",
-      {
-        replyToken,
-        messages: [message]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${CHANNEL_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 10000
-      }
-    );
+    updateMemory(userId, text, result);
 
   } catch (err) {
-    console.log("WEBHOOK ERROR:", err.message);
+    console.log("ERROR:", err.message);
   }
 });
 
 /* =========================
-   🚀 RAILWAY SAFE PORT
+   🚀 START
 ========================= */
-const port = process.env.PORT || 3000;
-
-app.listen(port, () => {
-  console.log("🚀 V40 RUNNING ON PORT", port);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 V43 GOD MODE RUNNING");
 });
