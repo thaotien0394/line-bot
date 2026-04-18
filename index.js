@@ -4,31 +4,58 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ======================
-// 🔑 API KEYS
-// ======================
+/* =========================
+   🔑 API KEYS
+========================= */
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
 const HF_KEY = process.env.HF_KEY;
 const NEWSDATA_KEY = process.env.NEWSDATA_KEY;
 
-// ======================
-// 🚫 BLOCKLIST (SILENT)
-// ======================
+/* =========================
+   🚫 BLOCKLIST (HARD)
+========================= */
 const BLOCKED = [
-  "RS","CTKM","8NTTT","HD","MT","BOT",
-  "LAPTOP","MÙA NÓNG","CAMERA","PV",
-  "BB","TRACHAM","KEY"
+  "RS",
+  "CTKM",
+  "8NTTT",
+  "HD",
+  "MT",
+  "BOT",
+  "LAPTOP",
+  "MÙA NÓNG",
+  "CAMERA",
+  "PV",
+  "BB",
+  "TRACHAM",
+  "KEY"
 ];
 
-function isBlocked(text) {
-  return BLOCKED.some(k =>
-    text.toUpperCase().includes(k)
-  );
+/* =========================
+   🧹 CLEAN TEXT
+========================= */
+function cleanText(text) {
+  return text
+    .toUpperCase()
+    .replace(/[^A-Z0-9À-Ỹ\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-// ======================
-// 🧭 INTENT DETECT
-// ======================
+/* =========================
+   🚫 HARD BLOCK CHECK
+   - CHỈ MATCH CHÍNH XÁC TỪ
+========================= */
+function isBlocked(text) {
+  const words = cleanText(text).split(" ");
+
+  return BLOCKED.some(block => {
+    return words.includes(block);
+  });
+}
+
+/* =========================
+   🧭 INTENT
+========================= */
 function classifyIntent(text) {
   if (/vẽ|ảnh|image|draw|mockup/i.test(text)) return "IMAGE";
   if (/so sánh|vs|RTX|GPU|CPU|laptop/i.test(text)) return "TECH";
@@ -36,9 +63,9 @@ function classifyIntent(text) {
   return "CHAT";
 }
 
-// ======================
-// 📰 REALTIME NEWS
-// ======================
+/* =========================
+   📰 REALTIME NEWS
+========================= */
 async function getNews(query) {
   try {
     const res = await axios.get(
@@ -50,9 +77,9 @@ async function getNews(query) {
   }
 }
 
-// ======================
-// 🤖 OPENROUTER AI (FIXED)
-// ======================
+/* =========================
+   🤖 OPENROUTER AI
+========================= */
 async function askAI(prompt) {
   try {
     const res = await axios.post(
@@ -63,7 +90,7 @@ async function askAI(prompt) {
           {
             role: "system",
             content:
-              "Bạn là AI công nghệ. Phân tích logic, không bịa dữ liệu."
+              "Bạn là AI công nghệ. Trả lời rõ ràng, không bịa dữ liệu."
           },
           {
             role: "user",
@@ -84,9 +111,9 @@ async function askAI(prompt) {
   }
 }
 
-// ======================
-// 🎨 IMAGE AI (HUGGINGFACE)
-// ======================
+/* =========================
+   🎨 IMAGE AI
+========================= */
 async function generateImage(prompt) {
   try {
     const res = await axios.post(
@@ -106,9 +133,9 @@ async function generateImage(prompt) {
   }
 }
 
-// ======================
-// 🧠 TECH ENGINE
-// ======================
+/* =========================
+   🧠 TECH ENGINE
+========================= */
 async function handleTech(query) {
   const news = await getNews(query);
 
@@ -120,64 +147,70 @@ Câu hỏi:
 ${query}
 
 Yêu cầu:
-- so sánh rõ ràng
-- không bịa
-- kết luận theo nhu cầu
+- phân tích rõ ràng
+- không bịa dữ liệu
+- so sánh theo thực tế
 `;
 
   return await askAI(prompt);
 }
 
-// ======================
-// 🚀 MAIN ENGINE
-// ======================
+/* =========================
+   🚀 MAIN ENGINE
+========================= */
 async function handleUser(userId, text) {
 
-  // 🚫 SILENT BLOCK
-  if (isBlocked(text)) return null;
+  /* 🚫 HARD BLOCK */
+  if (isBlocked(text)) {
+    return null; // IM LẶNG HOÀN TOÀN
+  }
 
   const intent = classifyIntent(text);
 
-  // 🎨 IMAGE
+  /* 🎨 IMAGE */
   if (intent === "IMAGE") {
     const img = await generateImage(text);
     if (!img) return "❌ Không tạo ảnh được";
-    return { type: "image", data: img.toString("base64") };
+
+    return {
+      type: "image",
+      data: img.toString("base64")
+    };
   }
 
-  // 🧠 TECH / PRICE
+  /* 🧠 TECH / PRICE */
   if (intent === "TECH" || intent === "PRICE") {
     return await handleTech(text);
   }
 
-  // 💬 CHAT
+  /* 💬 CHAT */
   return await askAI(text);
 }
 
-// ======================
-// 🌐 WEBHOOK API
-// ======================
+/* =========================
+   🌐 WEBHOOK
+========================= */
 app.post("/webhook", async (req, res) => {
   const { userId, message } = req.body;
 
   const result = await handleUser(userId, message);
 
-  // silent
+  /* 🚫 silent */
   if (!result) return res.sendStatus(200);
 
-  // image
+  /* 🎨 image */
   if (typeof result === "object" && result.type === "image") {
     return res.json(result);
   }
 
-  // text
+  /* 💬 text */
   return res.json({
     type: "text",
     message: result
   });
 });
 
-// ======================
+/* ========================= */
 app.listen(3000, () =>
-  console.log("🚀 V35 STABLE RUNNING ON PORT 3000")
+  console.log("🚀 V36 HARD BLOCK SYSTEM RUNNING")
 );
