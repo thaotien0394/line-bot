@@ -8,12 +8,18 @@ app.use(express.json());
    🔑 API KEYS
 ========================= */
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
-const NEWSDATA_KEY = process.env.NEWSDATA_KEY;
-const SERPAPI_KEY = process.env.SERPAPI_KEY;
 const HF_KEY = process.env.HF_KEY;
+const STABILITY_KEY = process.env.STABILITY_KEY;
+const REPLICATE_KEY = process.env.REPLICATE_KEY;
+const CHANNEL_TOKEN = process.env.CHANNEL_TOKEN;
 
 /* =========================
-   🚫 BLOCKLIST SAFE
+   🧠 MEMORY CACHE (IN-MEMORY SIMPLE)
+========================= */
+const cache = new Map();
+
+/* =========================
+   🚫 BLOCKLIST (EXACT MATCH ONLY)
 ========================= */
 const BLOCKED = [
   "RS","CTKM","8NTTT","HD","MT","BOT",
@@ -21,9 +27,6 @@ const BLOCKED = [
   "BB","TRACHAM","KEY"
 ];
 
-/* =========================
-   🧹 NORMALIZE
-========================= */
 function normalize(text) {
   return (text || "")
     .toUpperCase()
@@ -32,166 +35,178 @@ function normalize(text) {
     .trim();
 }
 
-/* =========================
-   🚫 BLOCK SAFE (NO NULL FLOW)
-========================= */
 function isBlocked(text) {
   const words = normalize(text).split(" ");
   return BLOCKED.some(b => words.includes(b));
 }
 
 /* =========================
-   🧭 INTENT DETECT
+   🚦 ANTI-SPAM QUEUE
 ========================= */
-function classifyIntent(text) {
-  const t = (text || "").toLowerCase();
+const userQueue = new Map();
 
-  if (t.includes("vẽ") || t.includes("ảnh")) return "IMAGE";
-  if (t.includes("so sánh") || t.includes("gpu") || t.includes("cpu")) return "TECH";
-  if (t.includes("giá") || t.includes("mua")) return "TECH";
+function rateLimit(userId) {
+  const now = Date.now();
+  const last = userQueue.get(userId) || 0;
 
-  return "CHAT";
-}
-
-/* =========================
-   🔎 GOOGLE SEARCH
-========================= */
-async function searchGoogle(query) {
-  try {
-    const res = await axios.get(
-      `https://serpapi.com/search.json?q=${query}&api_key=${SERPAPI_KEY}`
-    );
-
-    return res.data.organic_results?.slice(0, 5) || [];
-  } catch (e) {
-    console.log("SEARCH ERROR:", e.message);
-    return [];
+  if (now - last < 2000) {
+    return false; // spam
   }
+
+  userQueue.set(userId, now);
+  return true;
 }
 
 /* =========================
-   📰 NEWS
-========================= */
-async function getNews(query) {
-  try {
-    const res = await axios.get(
-      `https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&q=${query}`
-    );
-
-    return res.data.results?.slice(0, 5) || [];
-  } catch (e) {
-    console.log("NEWS ERROR:", e.message);
-    return [];
-  }
-}
-
-/* =========================
-   🤖 OPENROUTER (SAFE + RETRY)
+   🤖 OPENROUTER AI (CACHE + RETRY)
 ========================= */
 async function askAI(prompt) {
+
+  if (cache.has(prompt)) {
+    return cache.get(prompt);
+  }
+
   try {
     const res = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         model: "mistralai/mistral-7b-instruct",
         messages: [
-          {
-            role: "system",
-            content: "Bạn là AI công nghệ. Trả lời rõ ràng, không bịa."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
+          { role: "system", content: "Bạn là AI công nghệ thông minh, phân tích chính xác." },
+          { role: "user", content: prompt }
         ]
       },
       {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_KEY}`
-        },
+        headers: { Authorization: `Bearer ${OPENROUTER_KEY}` },
         timeout: 15000
       }
     );
 
-    return res.data.choices?.[0]?.message?.content || "❌ Không có phản hồi AI";
+    const result = res.data.choices?.[0]?.message?.content || "❌ AI lỗi";
+
+    cache.set(prompt, result); // cache result
+    return result;
+
   } catch (e) {
-    console.log("AI ERROR:", e.message);
-    return "❌ AI đang bận, thử lại sau";
+    return "❌ AI đang bận";
   }
 }
 
 /* =========================
-   🎨 IMAGE AI
+   🎨 MULTI IMAGE AI LAYER
 ========================= */
-async function generateImage(prompt) {
+async function hfImage(prompt) {
   try {
     const res = await axios.post(
       "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
-      { inputs: `${prompt}, ultra detailed` },
+      { inputs: prompt },
       {
-        headers: {
-          Authorization: `Bearer ${HF_KEY}`
-        },
-        responseType: "arraybuffer",
-        timeout: 30000
+        headers: { Authorization: `Bearer ${HF_KEY}` },
+        responseType: "arraybuffer"
       }
     );
 
     return Buffer.from(res.data).toString("base64");
-  } catch (e) {
-    console.log("IMAGE ERROR:", e.message);
+  } catch {
+    return null;
+  }
+}
+
+async function stabilityImage(prompt) {
+  try {
+    const res = await axios.post(
+      "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+      {
+        text_prompts: [{ text: prompt }],
+        cfg_scale: 7,
+        height: 1024,
+        width: 1024
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${STABILITY_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    return res.data?.artifacts?.[0]?.base64 || null;
+  } catch {
+    return null;
+  }
+}
+
+async function replicateImage(prompt) {
+  try {
+    const res = await axios.post(
+      "https://api.replicate.com/v1/predictions",
+      {
+        version: "stability-ai/sdxl",
+        input: { prompt }
+      },
+      {
+        headers: {
+          Authorization: `Token ${REPLICATE_KEY}`
+        }
+      }
+    );
+
+    return res.data?.output?.[0] || null;
+  } catch {
     return null;
   }
 }
 
 /* =========================
-   🧠 TECH ENGINE
+   🎨 IMAGE ROUTER (MULTI LAYER FALLBACK)
 ========================= */
-async function handleTech(text) {
-  const [news, search] = await Promise.all([
-    getNews(text),
-    searchGoogle(text)
-  ]);
+async function generateImage(prompt) {
 
-  const prompt = `
-REAL DATA:
-NEWS: ${JSON.stringify(news)}
-SEARCH: ${JSON.stringify(search)}
+  let img = await hfImage(prompt);
+  if (img) return img;
 
-QUESTION:
-${text}
+  img = await stabilityImage(prompt);
+  if (img) return img;
 
-TASK:
-- phân tích thực tế
-- không bịa
-- so sánh rõ ràng
-`;
+  img = await replicateImage(prompt);
+  if (img) return img;
 
-  return await askAI(prompt);
+  return null;
 }
 
 /* =========================
-   🚀 CORE ENGINE (NO NULL DEAD FLOW)
+   🧠 INTENT ENGINE
 ========================= */
-async function handleUser(text) {
+function classifyIntent(text) {
+  const t = (text || "").toLowerCase();
 
-  console.log("👉 USER INPUT:", text);
+  if (t.includes("vẽ") || t.includes("ảnh")) return "IMAGE";
+  if (t.includes("so sánh") || t.includes("giá") || t.includes("mua")) return "TECH";
 
-  if (!text) return "❌ Không có nội dung";
+  return "CHAT";
+}
 
-  // 🚫 BLOCK SAFE
+/* =========================
+   🚀 CORE PROCESSOR
+========================= */
+async function handleUser(userId, text) {
+
+  if (!text) return "❌ Không có dữ liệu";
+
+  if (!rateLimit(userId)) {
+    return "⛔ Bạn gửi quá nhanh, vui lòng chờ 2 giây";
+  }
+
   if (isBlocked(text)) {
-    console.log("🚫 BLOCKED:", text);
     return "❌ Nội dung không được hỗ trợ";
   }
 
   const intent = classifyIntent(text);
-  console.log("🧭 INTENT:", intent);
 
   // 🎨 IMAGE
   if (intent === "IMAGE") {
     const img = await generateImage(text);
-    if (!img) return "❌ Không tạo ảnh được";
+    if (!img) return "❌ Không tạo được ảnh";
 
     return {
       type: "image",
@@ -199,68 +214,65 @@ async function handleUser(text) {
     };
   }
 
-  // 🧠 TECH
-  if (intent === "TECH") {
-    return await handleTech(text);
-  }
-
-  // 💬 CHAT DEFAULT
+  // 🧠 AI TEXT
   return await askAI(text);
 }
 
 /* =========================
-   🌐 WEBHOOK FIXED (LINE SAFE)
+   🌐 LINE WEBHOOK (ZERO 502 SAFE)
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("📩 RAW BODY:", JSON.stringify(req.body));
 
     const event = req.body.events?.[0];
-
     const text = event?.message?.text;
     const userId = event?.source?.userId;
+    const replyToken = event?.replyToken;
 
-    console.log("👤 USER:", userId);
-    console.log("💬 TEXT:", text);
-
-    if (!text) {
-      console.log("⚠️ NO TEXT");
+    if (!text || !replyToken) {
       return res.sendStatus(200);
     }
 
-    const result = await handleUser(text);
+    const result = await handleUser(userId, text);
 
-    console.log("📤 RESULT:", result);
+    let message;
 
-    // ❗ NEVER SILENT
-    if (!result) {
-      return res.json({
-        type: "text",
-        message: "❌ Không xử lý được yêu cầu"
-      });
-    }
-
-    // 🎨 IMAGE
     if (typeof result === "object" && result.type === "image") {
-      return res.json({
+      message = {
         type: "image",
-        data: result.data
-      });
+        originalContentUrl: `data:image/png;base64,${result.data}`,
+        previewImageUrl: `data:image/png;base64,${result.data}`
+      };
+    } else {
+      message = {
+        type: "text",
+        text: result
+      };
     }
 
-    // 💬 TEXT
-    return res.json({
-      type: "text",
-      message: result
-    });
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      {
+        replyToken,
+        messages: [message]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${CHANNEL_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    return res.sendStatus(200);
 
   } catch (e) {
-    console.log("💥 WEBHOOK ERROR:", e);
-    return res.sendStatus(200);
+    console.log("WEBHOOK ERROR:", e.message);
+    return res.sendStatus(200); // ALWAYS SAFE
   }
 });
 
 /* ========================= */
 app.listen(3000, () => {
-  console.log("🚀 V38 DEBUG STABLE RUNNING");
+  console.log("🚀 V40 PRODUCTION SYSTEM RUNNING");
 });
