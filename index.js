@@ -7,18 +7,13 @@ app.use(express.json());
 /* =========================
    🔑 API KEYS
 ========================= */
-const CHANNEL_TOKEN = process.env.CHANNEL_TOKEN;
-
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
 const NEWSDATA_KEY = process.env.NEWSDATA_KEY;
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
-
 const HF_KEY = process.env.HF_KEY;
-const STABILITY_KEY = process.env.STABILITY_KEY;
-const REPLICATE_KEY = process.env.REPLICATE_KEY;
 
 /* =========================
-   🚫 BLOCKLIST (HARD SAFE)
+   🚫 BLOCKLIST (SAFE HARD)
 ========================= */
 const BLOCKED = [
   "RS","CTKM","8NTTT","HD","MT","BOT",
@@ -26,62 +21,75 @@ const BLOCKED = [
   "BB","TRACHAM","KEY"
 ];
 
+/* =========================
+   🧹 NORMALIZE
+========================= */
 function normalize(text) {
-  return text
+  return (text || "")
     .toUpperCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+/* =========================
+   🚫 BLOCK SAFE (NO DEAD BOT)
+========================= */
 function isBlocked(text) {
-  const input = normalize(text);
-  return BLOCKED.some(b => new RegExp(`\\b${b}\\b`, "u").test(input));
+  const words = normalize(text).split(" ");
+  return BLOCKED.some(b => words.includes(b));
 }
 
 /* =========================
-   🧭 INTENT DETECT
+   🧭 INTENT
 ========================= */
 function classifyIntent(text) {
-  const t = text.toLowerCase();
+  const t = (text || "").toLowerCase();
 
-  if (t.includes("vẽ") || t.includes("ảnh") || t.includes("draw")) return "IMAGE";
-  if (t.includes("so sánh") || t.includes("vs") || t.includes("gpu") || t.includes("cpu")) return "TECH";
-  if (t.includes("giá") || t.includes("mua") || t.includes("bao nhiêu")) return "PRICE";
-  if (t.includes("tìm") || t.includes("search")) return "SEARCH";
+  if (t.includes("vẽ") || t.includes("ảnh")) return "IMAGE";
+  if (t.includes("so sánh") || t.includes("gpu") || t.includes("cpu")) return "TECH";
+  if (t.includes("giá") || t.includes("mua")) return "TECH";
 
   return "CHAT";
 }
 
 /* =========================
-   🧠 OPENROUTER AI
+   🤖 OPENROUTER (RETRY 3 LẦN)
 ========================= */
-async function askAI(prompt) {
-  try {
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages: [
-          { role: "system", content: "Bạn là AI công nghệ. Không bịa dữ liệu." },
-          { role: "user", content: prompt }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_KEY}`
+async function askAI(prompt, retry = 3) {
+  for (let i = 0; i < retry; i++) {
+    try {
+      const res = await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model: "mistralai/mistral-7b-instruct",
+          messages: [
+            {
+              role: "system",
+              content: "Bạn là AI công nghệ. Trả lời ngắn gọn, chính xác."
+            },
+            { role: "user", content: prompt }
+          ]
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${OPENROUTER_KEY}`
+          },
+          timeout: 15000
         }
-      }
-    );
+      );
 
-    return res.data.choices[0].message.content;
-  } catch {
-    return "❌ AI lỗi";
+      return res.data.choices?.[0]?.message?.content || "❌ Không có phản hồi AI";
+    } catch (e) {
+      console.log("AI retry:", i + 1);
+    }
   }
+
+  return "❌ AI tạm thời không phản hồi";
 }
 
 /* =========================
-   🔎 SERP GOOGLE REALTIME
+   🔎 SEARCH
 ========================= */
 async function searchGoogle(query) {
   try {
@@ -96,7 +104,7 @@ async function searchGoogle(query) {
 }
 
 /* =========================
-   📰 NEWS REALTIME
+   📰 NEWS
 ========================= */
 async function getNews(query) {
   try {
@@ -111,120 +119,117 @@ async function getNews(query) {
 }
 
 /* =========================
-   🎨 IMAGE ENGINE (MULTI)
+   🎨 IMAGE AI
 ========================= */
-
-// HF
-async function hfImage(prompt) {
+async function generateImage(prompt) {
   try {
     const res = await axios.post(
       "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
-      { inputs: `${prompt}, ultra detailed` },
+      { inputs: `${prompt}, ultra detailed, 4k` },
       {
-        headers: { Authorization: `Bearer ${HF_KEY}` },
-        responseType: "arraybuffer"
+        headers: {
+          Authorization: `Bearer ${HF_KEY}`
+        },
+        responseType: "arraybuffer",
+        timeout: 30000
       }
     );
 
-    return Buffer.from(res.data);
+    return Buffer.from(res.data).toString("base64");
   } catch {
     return null;
   }
 }
 
 /* =========================
-   🧠 TECH ENGINE (REAL DATA + AI)
+   🧠 TECH ENGINE
 ========================= */
-async function handleTech(query) {
-
+async function handleTech(text) {
   const [news, search] = await Promise.all([
-    getNews(query),
-    searchGoogle(query)
+    getNews(text),
+    searchGoogle(text)
   ]);
 
   const prompt = `
-REAL DATA NEWS:
-${JSON.stringify(news)}
+Dữ liệu thực tế:
+NEWS: ${JSON.stringify(news)}
+SEARCH: ${JSON.stringify(search)}
 
-GOOGLE RESULTS:
-${JSON.stringify(search)}
+Câu hỏi: ${text}
 
-QUESTION:
-${query}
-
-TASK:
-- phân tích
-- so sánh
-- kết luận thực tế
+Yêu cầu:
+- phân tích thực tế
+- không bịa
+- so sánh rõ ràng
 `;
 
   return await askAI(prompt);
 }
 
 /* =========================
-   🎨 IMAGE ROUTER
+   🚀 CORE ENGINE
 ========================= */
-async function handleImage(prompt) {
-  const img = await hfImage(prompt);
-  if (!img) return "❌ Không tạo ảnh";
+async function handleUser(text) {
 
-  return {
-    type: "image",
-    data: img.toString("base64")
-  };
-}
-
-/* =========================
-   🚀 MAIN ENGINE
-========================= */
-async function handleUser(userId, text) {
-
-  // 🚫 BLOCK HARD
-  if (isBlocked(text)) return null;
+  // 🚫 BLOCK nhưng KHÔNG kill bot
+  if (isBlocked(text)) {
+    return "❌ Nội dung không được hỗ trợ";
+  }
 
   const intent = classifyIntent(text);
 
-  // 🎨 IMAGE
   if (intent === "IMAGE") {
-    return await handleImage(text);
+    const img = await generateImage(text);
+    if (!img) return "❌ Không tạo ảnh được";
+    return { type: "image", data: img };
   }
 
-  // 🔎 SEARCH
-  if (intent === "SEARCH") {
-    const data = await searchGoogle(text);
-    return await askAI(`Tóm tắt kết quả: ${JSON.stringify(data)}`);
-  }
-
-  // 🧠 TECH / PRICE
-  if (intent === "TECH" || intent === "PRICE") {
+  if (intent === "TECH") {
     return await handleTech(text);
   }
 
-  // 💬 CHAT
   return await askAI(text);
 }
 
 /* =========================
-   🌐 WEBHOOK LINE BOT
+   🌐 WEBHOOK LINE FIXED
 ========================= */
 app.post("/webhook", async (req, res) => {
-  const { userId, message } = req.body;
+  try {
+    const events = req.body.events;
 
-  const result = await handleUser(userId, message);
+    if (!events || !Array.isArray(events)) {
+      return res.sendStatus(200);
+    }
 
-  if (!result) return res.sendStatus(200);
+    const event = events[0];
+    const text = event?.message?.text;
 
-  if (typeof result === "object" && result.type === "image") {
-    return res.json(result);
+    if (!text) return res.sendStatus(200);
+
+    const result = await handleUser(text);
+
+    if (!result) return res.sendStatus(200);
+
+    if (typeof result === "object" && result.type === "image") {
+      return res.json({
+        type: "image",
+        data: result.data
+      });
+    }
+
+    return res.json({
+      type: "text",
+      message: result
+    });
+
+  } catch (e) {
+    console.log("WEBHOOK ERROR:", e);
+    return res.sendStatus(200);
   }
-
-  return res.json({
-    type: "text",
-    message: result
-  });
 });
 
 /* ========================= */
-app.listen(3000, () =>
-  console.log("🚀 V37 FULL SYSTEM RUNNING")
-);
+app.listen(3000, () => {
+  console.log("🚀 V38 STABLE PRODUCTION RUNNING");
+});
