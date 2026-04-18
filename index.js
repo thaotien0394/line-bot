@@ -7,78 +7,54 @@ app.use(express.json());
 /* =========================
    🔑 API KEYS
 ========================= */
+const CHANNEL_TOKEN = process.env.CHANNEL_TOKEN;
+
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
-const HF_KEY = process.env.HF_KEY;
 const NEWSDATA_KEY = process.env.NEWSDATA_KEY;
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
+
+const HF_KEY = process.env.HF_KEY;
+const STABILITY_KEY = process.env.STABILITY_KEY;
+const REPLICATE_KEY = process.env.REPLICATE_KEY;
 
 /* =========================
-   🚫 BLOCKLIST (HARD)
+   🚫 BLOCKLIST (HARD SAFE)
 ========================= */
 const BLOCKED = [
-  "RS",
-  "CTKM",
-  "8NTTT",
-  "HD",
-  "MT",
-  "BOT",
-  "LAPTOP",
-  "MÙA NÓNG",
-  "CAMERA",
-  "PV",
-  "BB",
-  "TRACHAM",
-  "KEY"
+  "RS","CTKM","8NTTT","HD","MT","BOT",
+  "LAPTOP","MÙA NÓNG","CAMERA","PV",
+  "BB","TRACHAM","KEY"
 ];
 
-/* =========================
-   🧹 CLEAN TEXT
-========================= */
-function cleanText(text) {
+function normalize(text) {
   return text
     .toUpperCase()
-    .replace(/[^A-Z0-9À-Ỹ\s]/gi, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-/* =========================
-   🚫 HARD BLOCK CHECK
-   - CHỈ MATCH CHÍNH XÁC TỪ
-========================= */
 function isBlocked(text) {
-  const words = cleanText(text).split(" ");
-
-  return BLOCKED.some(block => {
-    return words.includes(block);
-  });
+  const input = normalize(text);
+  return BLOCKED.some(b => new RegExp(`\\b${b}\\b`, "u").test(input));
 }
 
 /* =========================
-   🧭 INTENT
+   🧭 INTENT DETECT
 ========================= */
 function classifyIntent(text) {
-  if (/vẽ|ảnh|image|draw|mockup/i.test(text)) return "IMAGE";
-  if (/so sánh|vs|RTX|GPU|CPU|laptop/i.test(text)) return "TECH";
-  if (/giá|bao nhiêu|mua|deal/i.test(text)) return "PRICE";
+  const t = text.toLowerCase();
+
+  if (t.includes("vẽ") || t.includes("ảnh") || t.includes("draw")) return "IMAGE";
+  if (t.includes("so sánh") || t.includes("vs") || t.includes("gpu") || t.includes("cpu")) return "TECH";
+  if (t.includes("giá") || t.includes("mua") || t.includes("bao nhiêu")) return "PRICE";
+  if (t.includes("tìm") || t.includes("search")) return "SEARCH";
+
   return "CHAT";
 }
 
 /* =========================
-   📰 REALTIME NEWS
-========================= */
-async function getNews(query) {
-  try {
-    const res = await axios.get(
-      `https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&q=${query}`
-    );
-    return res.data.results?.slice(0, 5) || [];
-  } catch {
-    return [];
-  }
-}
-
-/* =========================
-   🤖 OPENROUTER AI
+   🧠 OPENROUTER AI
 ========================= */
 async function askAI(prompt) {
   try {
@@ -87,15 +63,8 @@ async function askAI(prompt) {
       {
         model: "mistralai/mistral-7b-instruct",
         messages: [
-          {
-            role: "system",
-            content:
-              "Bạn là AI công nghệ. Trả lời rõ ràng, không bịa dữ liệu."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
+          { role: "system", content: "Bạn là AI công nghệ. Không bịa dữ liệu." },
+          { role: "user", content: prompt }
         ]
       },
       {
@@ -106,23 +75,53 @@ async function askAI(prompt) {
     );
 
     return res.data.choices[0].message.content;
-  } catch (e) {
-    return "❌ AI error";
+  } catch {
+    return "❌ AI lỗi";
   }
 }
 
 /* =========================
-   🎨 IMAGE AI
+   🔎 SERP GOOGLE REALTIME
 ========================= */
-async function generateImage(prompt) {
+async function searchGoogle(query) {
+  try {
+    const res = await axios.get(
+      `https://serpapi.com/search.json?q=${query}&api_key=${SERPAPI_KEY}`
+    );
+
+    return res.data.organic_results?.slice(0, 5) || [];
+  } catch {
+    return [];
+  }
+}
+
+/* =========================
+   📰 NEWS REALTIME
+========================= */
+async function getNews(query) {
+  try {
+    const res = await axios.get(
+      `https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&q=${query}`
+    );
+
+    return res.data.results?.slice(0, 5) || [];
+  } catch {
+    return [];
+  }
+}
+
+/* =========================
+   🎨 IMAGE ENGINE (MULTI)
+========================= */
+
+// HF
+async function hfImage(prompt) {
   try {
     const res = await axios.post(
       "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
-      { inputs: `${prompt}, ultra detailed, 4k` },
+      { inputs: `${prompt}, ultra detailed` },
       {
-        headers: {
-          Authorization: `Bearer ${HF_KEY}`
-        },
+        headers: { Authorization: `Bearer ${HF_KEY}` },
         responseType: "arraybuffer"
       }
     );
@@ -134,25 +133,45 @@ async function generateImage(prompt) {
 }
 
 /* =========================
-   🧠 TECH ENGINE
+   🧠 TECH ENGINE (REAL DATA + AI)
 ========================= */
 async function handleTech(query) {
-  const news = await getNews(query);
+
+  const [news, search] = await Promise.all([
+    getNews(query),
+    searchGoogle(query)
+  ]);
 
   const prompt = `
-Dữ liệu realtime:
+REAL DATA NEWS:
 ${JSON.stringify(news)}
 
-Câu hỏi:
+GOOGLE RESULTS:
+${JSON.stringify(search)}
+
+QUESTION:
 ${query}
 
-Yêu cầu:
-- phân tích rõ ràng
-- không bịa dữ liệu
-- so sánh theo thực tế
+TASK:
+- phân tích
+- so sánh
+- kết luận thực tế
 `;
 
   return await askAI(prompt);
+}
+
+/* =========================
+   🎨 IMAGE ROUTER
+========================= */
+async function handleImage(prompt) {
+  const img = await hfImage(prompt);
+  if (!img) return "❌ Không tạo ảnh";
+
+  return {
+    type: "image",
+    data: img.toString("base64")
+  };
 }
 
 /* =========================
@@ -160,50 +179,45 @@ Yêu cầu:
 ========================= */
 async function handleUser(userId, text) {
 
-  /* 🚫 HARD BLOCK */
-  if (isBlocked(text)) {
-    return null; // IM LẶNG HOÀN TOÀN
-  }
+  // 🚫 BLOCK HARD
+  if (isBlocked(text)) return null;
 
   const intent = classifyIntent(text);
 
-  /* 🎨 IMAGE */
+  // 🎨 IMAGE
   if (intent === "IMAGE") {
-    const img = await generateImage(text);
-    if (!img) return "❌ Không tạo ảnh được";
-
-    return {
-      type: "image",
-      data: img.toString("base64")
-    };
+    return await handleImage(text);
   }
 
-  /* 🧠 TECH / PRICE */
+  // 🔎 SEARCH
+  if (intent === "SEARCH") {
+    const data = await searchGoogle(text);
+    return await askAI(`Tóm tắt kết quả: ${JSON.stringify(data)}`);
+  }
+
+  // 🧠 TECH / PRICE
   if (intent === "TECH" || intent === "PRICE") {
     return await handleTech(text);
   }
 
-  /* 💬 CHAT */
+  // 💬 CHAT
   return await askAI(text);
 }
 
 /* =========================
-   🌐 WEBHOOK
+   🌐 WEBHOOK LINE BOT
 ========================= */
 app.post("/webhook", async (req, res) => {
   const { userId, message } = req.body;
 
   const result = await handleUser(userId, message);
 
-  /* 🚫 silent */
   if (!result) return res.sendStatus(200);
 
-  /* 🎨 image */
   if (typeof result === "object" && result.type === "image") {
     return res.json(result);
   }
 
-  /* 💬 text */
   return res.json({
     type: "text",
     message: result
@@ -212,5 +226,5 @@ app.post("/webhook", async (req, res) => {
 
 /* ========================= */
 app.listen(3000, () =>
-  console.log("🚀 V36 HARD BLOCK SYSTEM RUNNING")
+  console.log("🚀 V37 FULL SYSTEM RUNNING")
 );
