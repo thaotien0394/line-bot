@@ -1,289 +1,181 @@
+// =======================
+// V31 AI SYSTEM FULL
+// =======================
+
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 
-// ==========================
-// 🔐 ENV
-// ==========================
-const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
-const SERP_API_KEY = process.env.SERP_API_KEY;
+// =======================
+// 🔑 ENV KEYS
+// =======================
+const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
+const HF_KEY = process.env.HF_KEY;
+const REPLICATE_KEY = process.env.REPLICATE_KEY;
 
-// ==========================
-// 🧠 MEMORY
-// ==========================
-let memory = {};
-function saveMemory(userId, text) {
-  if (!memory[userId]) memory[userId] = [];
-  memory[userId].push(text);
-  if (memory[userId].length > 5) memory[userId].shift();
-}
-function getContext(userId) {
-  return memory[userId]?.join("\n") || "";
-}
+// =======================
+// 🚫 BLACKLIST (SILENT)
+// =======================
+const BLOCKED_KEYWORDS = [
+  "RS", "CTKM", "8NTTT", "HD", "MT", "BOT",
+  "LAPTOP", "MÙA NÓNG", "CAMERA", "PV",
+  "BB", "TRACHAM", "KEY"
+];
 
-// ==========================
-// 🚫 SPAM
-// ==========================
-let cooldown = {};
-function isSpam(userId) {
-  const now = Date.now();
-  if (!cooldown[userId]) return (cooldown[userId] = now), false;
-  if (now - cooldown[userId] < 1000) return true;
-  cooldown[userId] = now;
-  return false;
+function isBlocked(text) {
+  const input = text.toUpperCase();
+  return BLOCKED_KEYWORDS.some(k => input.includes(k));
 }
 
-// ==========================
-// 🚫 BLOCK EXACT
-// ==========================
-function normalize(text) {
-  return text.toLowerCase().replace(/[^\w\s]/g, "").trim();
-}
-function isBlockedSilent(text) {
-  const blockList = [
-    "key","ctkm","bb","camera","mt","hd",
-    "bot","laptop","mùa nóng","pv","8nttt","tracham","rs"
-  ];
-  return blockList.includes(normalize(text));
-}
+// =======================
+// 🧭 INTENT CLASSIFIER
+// =======================
+function classifyIntent(text) {
+  if (isBlocked(text)) return "BLOCKED";
 
-// ==========================
-// 🎨 IMAGE
-// ==========================
-function isImageRequest(text) {
-  return ["vẽ","ảnh","anime","3d","logo","avatar"]
-    .some(k => text.toLowerCase().includes(k));
+  if (/vẽ|ảnh|draw|image|tạo hình/i.test(text)) return "IMAGE";
+
+  if (/so sánh|vs|tốt hơn|nên mua|RTX|CPU|GPU|benchmark/i.test(text))
+    return "TECH";
+
+  if (/giá|bao nhiêu|mua|deal|rẻ/i.test(text))
+    return "PRICE";
+
+  return "CHAT";
 }
 
-function detectStyle(text) {
-  const t = text.toLowerCase();
-  if (t.includes("anime")) return "anime style";
-  if (t.includes("3d")) return "3D render";
-  return "realistic, 4k";
-}
+// =======================
+// 🧠 MEMORY SYSTEM
+// =======================
+const memory = {};
 
-function imageUrl(prompt) {
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt + "," + detectStyle(prompt))}`;
-}
-
-// ==========================
-// 📦 IMAGE QUEUE (4 USER)
-// ==========================
-let queue = [];
-let runningUsers = new Set();
-const MAX_USERS = 4;
-
-function addJob(userId, prompt) {
-  queue.push({ userId, prompt });
-  processQueue();
-}
-
-async function processQueue() {
-  if (queue.length === 0) return;
-  if (runningUsers.size >= MAX_USERS) return;
-
-  const job = queue.shift();
-  if (runningUsers.has(job.userId)) return processQueue();
-
-  runningUsers.add(job.userId);
-
-  try {
-    const url = imageUrl(job.prompt);
-
-    await pushLine(job.userId, [{
-      type: "image",
-      originalContentUrl: url,
-      previewImageUrl: url
-    }]);
-
-  } catch {
-    await pushLine(job.userId, [{ type: "text", text: "⚠️ lỗi ảnh" }]);
+function updateMemory(userId, intent) {
+  if (!memory[userId]) {
+    memory[userId] = { tech: 0, image: 0, price: 0 };
   }
 
-  runningUsers.delete(job.userId);
-  processQueue();
+  if (intent === "TECH") memory[userId].tech++;
+  if (intent === "IMAGE") memory[userId].image++;
+  if (intent === "PRICE") memory[userId].price++;
 }
 
-// ==========================
-// 🌐 SEARCH REAL (SERP)
-// ==========================
-let cache = {};
+// =======================
+// 🤖 OPENROUTER AI
+// =======================
+async function askAI(prompt) {
+  const res = await axios.post(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      model: "mistralai/mistral-7b-instruct",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Bạn là AI chuyên gia công nghệ. Phân tích logic, không bịa thông tin."
+        },
+        { role: "user", content: prompt }
+      ]
+    },
+    {
+      headers: {
+        Authorization: Bearer ${OPENROUTER_KEY}
+      }
+    }
+  );
 
-function getCache(q) {
-  if (!cache[q]) return null;
-  if (Date.now() - cache[q].time > 5 * 60 * 1000) return null;
-  return cache[q].data;
+  return res.data.choices[0].message.content;
 }
 
-function setCache(q, data) {
-  cache[q] = { data, time: Date.now() };
+// =======================
+// 🎨 IMAGE AI (HUGGINGFACE)
+// =======================
+async function generateHF(prompt) {
+  const res = await axios.post(
+    "https://api-inference.huggingface.co/models/stable-diffusion-xl-base-1.0",
+    { inputs: prompt },
+    {
+      headers: {
+        Authorization: Bearer ${HF_KEY}
+      },
+      responseType: "arraybuffer"
+    }
+  );
+
+  return Buffer.from(res.data);
 }
 
-async function searchGoogle(query) {
-  const cached = getCache(query);
-  if (cached) return cached;
+// fallback image
+async function generateImage(prompt) {
+  const clean = `${prompt}, ultra detailed, 4k, high quality`;
 
   try {
-    const res = await axios.get("https://serpapi.com/search.json", {
-      params: {
-        q: query,
-        api_key: SERP_API_KEY,
-        hl: "vi"
-      }
-    });
-
-    const results = res.data.organic_results.slice(0, 5);
-
-    const text = results.map(r =>
-      `${r.title}\n${r.snippet}`
-    ).join("\n\n");
-
-    setCache(query, text);
-    return text;
-
-  } catch {
+    return await generateHF(clean);
+  } catch (e) {
     return null;
   }
 }
 
-// ==========================
-// 🤖 AI TỔNG HỢP REALTIME
-// ==========================
-async function realtimeAnswer(query, userId) {
-  const data = await searchGoogle(query);
-  if (!data) return "❌ Không lấy được dữ liệu";
+// =======================
+// 🧠 MAIN ENGINE
+// =======================
+async function handleUser(userId, text) {
+  // 🚫 SILENT BLOCK
+  if (isBlocked(text)) return null;
 
-  try {
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `
-Hiện tại là năm ${new Date().getFullYear()}.
+  const intent = classifyIntent(text);
 
-- Trả lời như dữ liệu mới nhất
-- Không nói "2023"
-- Tóm tắt rõ ràng
-`
-          },
-          {
-            role: "user",
-            content: `Câu hỏi: ${query}\n\nDữ liệu:\n${data}`
-          }
-        ]
-      },
-      {
-        headers: { Authorization: `Bearer ${OPENROUTER_KEY}` }
-      }
-    );
+  updateMemory(userId, intent);
 
-    return res.data.choices[0].message.content;
-
-  } catch {
-    return data;
+  // 🎨 IMAGE
+  if (intent === "IMAGE") {
+    const img = await generateImage(text);
+    if (!img) return "❌ Không tạo được ảnh";
+    return img;
   }
-}
 
-// ==========================
-// 💬 CHAT
-// ==========================
-async function askAI(text, userId) {
-  try {
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `Hiện tại là ${new Date().getFullYear()}.\n${getContext(userId)}`
-          },
-          { role: "user", content: text }
-        ]
-      },
-      {
-        headers: { Authorization: `Bearer ${OPENROUTER_KEY}` }
-      }
-    );
-
-    return res.data.choices[0].message.content;
-
-  } catch {
-    return "⚠️ AI lỗi";
+  // 🧠 TECH
+  if (intent === "TECH") {
+    return await askAI(`So sánh / phân tích kỹ thuật: ${text}`);
   }
+
+  // 💰 PRICE
+  if (intent === "PRICE") {
+    return await askAI(`Phân tích giá + tư vấn mua: ${text}`);
+  }
+
+  // 💬 CHAT
+  return await askAI(text);
 }
 
-// ==========================
-// 📩 LINE
-// ==========================
-async function replyLine(token, messages) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    { replyToken: token, messages },
-    { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
-  );
-}
-
-async function pushLine(userId, messages) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/push",
-    { to: userId, messages },
-    { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
-  );
-}
-
-// ==========================
-// 🚀 WEBHOOK
-// ==========================
+// =======================
+// 🌐 API (WEBHOOK)
+// =======================
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200);
+  const { userId, message } = req.body;
 
-  for (const event of req.body.events || []) {
-    try {
-      if (event.type !== "message") continue;
-      if (event.message.type !== "text") continue;
+  const result = await handleUser(userId, message);
 
-      const text = event.message.text;
-      const userId = event.source.userId;
-      const replyToken = event.replyToken;
+  // nếu bị block → im lặng
+  if (!result) return res.sendStatus(200);
 
-      if (isSpam(userId)) continue;
-      if (isBlockedSilent(text)) return;
-
-      saveMemory(userId, text);
-
-      // 🎨 IMAGE
-      if (isImageRequest(text)) {
-        await replyLine(replyToken, [
-          { type: "text", text: "🎨 đang vẽ..." }
-        ]);
-        addJob(userId, text);
-        continue;
-      }
-
-      // 🌐 REALTIME
-      await replyLine(replyToken, [
-        { type: "text", text: "🔎 đang tìm dữ liệu mới..." }
-      ]);
-
-      const result = await realtimeAnswer(text, userId);
-
-      await pushLine(userId, [
-        { type: "text", text: result }
-      ]);
-
-    } catch (err) {
-      console.log(err.message);
-    }
+  // nếu là ảnh
+  if (Buffer.isBuffer(result)) {
+    return res.send({
+      type: "image",
+      data: result.toString("base64")
+    });
   }
+
+  // text
+  return res.send({
+    type: "text",
+    message: result
+  });
 });
 
-// ==========================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 V28 REALTIME TRUE RUNNING"));
+// =======================
+app.listen(3000, () =>
+  console.log("V31 AI SYSTEM RUNNING ON PORT 3000")
+);
