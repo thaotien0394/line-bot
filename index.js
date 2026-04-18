@@ -13,15 +13,29 @@ const HF_KEY = process.env.HF_KEY || "";
 const CHANNEL_TOKEN = process.env.CHANNEL_TOKEN || "";
 const SERP_API_KEY = process.env.SERP_API_KEY || "";
 const NEWSDATA_KEY = process.env.NEWSDATA_KEY || "";
-
-// Cloudinary (FIX BASE64 → URL)
 const CLOUDINARY_URL = process.env.CLOUDINARY_URL || "";
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || "";
 
 /* =========================
-   🚀 HEALTH CHECK
+   🚀 LOG HELPER (DEBUG FULL)
 ========================= */
-app.get("/", (req, res) => res.send("V46 IMAGE FIX + STABLE AI RUNNING"));
+function logError(source, err) {
+  console.log("====================");
+  console.log("❌ ERROR SOURCE:", source);
+
+  if (err?.response) {
+    console.log("STATUS:", err.response.status);
+    console.log("DATA:", err.response.data);
+  } else {
+    console.log("MESSAGE:", err.message);
+  }
+
+  console.log("====================");
+}
+
+function logInfo(title, data) {
+  console.log("🧠", title, data);
+}
 
 /* =========================
    🚫 BLOCK LIST
@@ -40,7 +54,6 @@ function isBlocked(text) {
    🧠 MEMORY
 ========================= */
 const memory = new Map();
-
 function getMemory(userId) {
   if (!memory.has(userId)) memory.set(userId, { history: [] });
   return memory.get(userId);
@@ -53,11 +66,9 @@ function updateMemory(userId, text, reply) {
 }
 
 /* =========================
-   ⚡ CACHE + RATE LIMIT
+   ⚡ RATE LIMIT
 ========================= */
-const cache = new Map();
 const userTime = new Map();
-
 function rateLimit(userId) {
   const now = Date.now();
   const last = userTime.get(userId) || 0;
@@ -67,10 +78,12 @@ function rateLimit(userId) {
 }
 
 /* =========================
-   🧠 OPENROUTER (RETRY)
+   🧠 AI PROVIDERS (AUTO SWITCH)
 ========================= */
-async function callOpenRouter(text, system, retry = 2) {
+async function openRouter(text, system) {
   try {
+    if (!OPENROUTER_KEY) throw new Error("Missing OPENROUTER_KEY");
+
     const res = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -86,62 +99,57 @@ async function callOpenRouter(text, system, retry = 2) {
     return res.data?.choices?.[0]?.message?.content;
 
   } catch (err) {
-    console.log("OPENROUTER ERROR:", err?.response?.data || err.message);
-
-    if (retry > 0) return await callOpenRouter(text, system, retry - 1);
-
+    logError("OPENROUTER", err);
     return null;
   }
 }
 
-/* =========================
-   🧠 HF FALLBACK
-========================= */
-async function hfFallback(text) {
+async function huggingFace(text) {
   try {
-    if (!HF_KEY) return null;
+    if (!HF_KEY) throw new Error("Missing HF_KEY");
 
     const res = await axios.post(
-      "https://api-inference.huggingface.co/models/google/flan-t5-base",
+      "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
       { inputs: text },
-      { headers: { Authorization: `Bearer ${HF_KEY}` }, timeout: 12000 }
+      { headers: { Authorization: `Bearer ${HF_KEY}` }, timeout: 15000 }
     );
 
     return res.data?.[0]?.generated_text || null;
-  } catch {
+
+  } catch (err) {
+    logError("HUGGINGFACE", err);
     return null;
   }
 }
 
+async function simpleFallback(text) {
+  logInfo("FALLBACK_SIMPLE", text);
+  return "🤖 Hệ thống đang quá tải, vui lòng thử lại sau";
+}
+
 /* =========================
-   🧠 AI ROUTER
+   🧠 AI ROUTER (SMART SWITCH)
 ========================= */
 async function aiRouter(userId, text) {
   const mem = getMemory(userId);
 
-  const system = `
-AI STABLE LOGIC MODE:
-- trả lời ngắn gọn
-- ưu tiên ý chính
-- có suy luận logic
-- hiểu ngữ cảnh
-Lịch sử: ${JSON.stringify(mem.history.slice(-5))}
-`;
+  const system = `AI LOGIC MODE:\n- ngắn gọn\n- đúng trọng tâm\n- suy luận rõ ràng\nHistory: ${JSON.stringify(mem.history.slice(-5))}`;
 
-  let result = await callOpenRouter(text, system);
+  logInfo("AI REQUEST", { userId, text });
 
-  if (!result) result = await hfFallback(text);
+  let result = await openRouter(text, system);
 
-  if (!result) result = "🤖 AI tạm thời gián đoạn";
+  if (!result) {
+    logInfo("SWITCH TO HF", "OpenRouter failed");
+    result = await huggingFace(text);
+  }
 
-  return format(result);
-}
+  if (!result) {
+    logInfo("SWITCH TO SIMPLE", "HF failed");
+    result = await simpleFallback(text);
+  }
 
-/* =========================
-   ✨ FORMAT
-========================= */
-function format(text) {
-  return `🧠 Ý chính:\n➡️ ${text}\n\n💡 Tóm tắt:\n- Ngắn gọn\n- Dễ hiểu\n- Logic rõ ràng`;
+  return `🧠 Ý chính:\n➡️ ${result}\n\n💡 Tóm tắt:\n- logic rõ ràng\n- dễ hiểu`;
 }
 
 /* =========================
@@ -149,14 +157,16 @@ function format(text) {
 ========================= */
 async function search(query) {
   try {
-    if (!SERP_API_KEY) return "❌ No search key";
+    if (!SERP_API_KEY) return "No key";
 
     const res = await axios.get("https://serpapi.com/search", {
       params: { q: query, api_key: SERP_API_KEY }
     });
 
     return res.data?.organic_results?.[0]?.snippet || "No result";
-  } catch {
+
+  } catch (err) {
+    logError("SEARCH", err);
     return "Search error";
   }
 }
@@ -168,37 +178,15 @@ async function news() {
   try {
     const res = await axios.get(`https://newsdata.io/api/1/news?apikey=${NEWSDATA_KEY}&country=vn`);
     return res.data?.results?.[0]?.title || "No news";
-  } catch {
+  } catch (err) {
+    logError("NEWS", err);
     return "News error";
   }
 }
 
 /* =========================
-   🎨 IMAGE (HF → CLOUDINARY FIX)
+   🎨 IMAGE (SAFE)
 ========================= */
-async function uploadToCloudinary(base64) {
-  try {
-    if (!CLOUDINARY_URL) return null;
-
-    const form = new FormData();
-    form.append("file", `data:image/png;base64,${base64}`);
-
-    if (CLOUDINARY_UPLOAD_PRESET) {
-      form.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-    }
-
-    const res = await axios.post(CLOUDINARY_URL, form, {
-      headers: form.getHeaders()
-    });
-
-    return res.data?.secure_url || null;
-
-  } catch (err) {
-    console.log("CLOUDINARY ERROR:", err.message);
-    return null;
-  }
-}
-
 async function image(prompt) {
   try {
     if (!HF_KEY) return null;
@@ -211,40 +199,35 @@ async function image(prompt) {
 
     const base64 = Buffer.from(res.data).toString("base64");
 
-    // FIX: convert base64 → URL
-    const url = await uploadToCloudinary(base64);
+    if (!CLOUDINARY_URL) return `data:image/png;base64,${base64}`;
 
-    if (url) return url;
+    const form = new FormData();
+    form.append("file", `data:image/png;base64,${base64}`);
+    if (CLOUDINARY_UPLOAD_PRESET) form.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
 
-    return `data:image/png;base64,${base64}`;
+    const upload = await axios.post(CLOUDINARY_URL, form, {
+      headers: form.getHeaders()
+    });
 
-  } catch {
+    return upload.data?.secure_url || `data:image/png;base64,${base64}`;
+
+  } catch (err) {
+    logError("IMAGE", err);
     return null;
   }
 }
 
 /* =========================
-   🧠 INTENT
-========================= */
-function intent(text) {
-  const t = text.toLowerCase();
-  if (t.includes("vẽ") || t.includes("ảnh")) return "IMAGE";
-  if (t.includes("tin")) return "NEWS";
-  if (t.includes("tìm")) return "SEARCH";
-  return "CHAT";
-}
-
-/* =========================
-   ⚙️ HANDLER
+   ⚙️ HANDLE
 ========================= */
 async function handle(userId, text) {
   if (!rateLimit(userId)) return "⛔ Spam detected";
 
-  const type = intent(text);
+  const t = text.toLowerCase();
 
-  if (type === "IMAGE") return { type: "image", data: await image(text) };
-  if (type === "SEARCH") return await search(text);
-  if (type === "NEWS") return await news();
+  if (t.includes("vẽ") || t.includes("ảnh")) return { type: "image", data: await image(text) };
+  if (t.includes("tin")) return await news();
+  if (t.includes("tìm")) return await search(text);
 
   return await aiRouter(userId, text);
 }
@@ -264,20 +247,13 @@ app.post("/webhook", async (req, res) => {
     const replyToken = e.replyToken;
 
     if (!text || !replyToken) return;
-
     if (isBlocked(text)) return;
 
     const result = await handle(userId, text);
 
     let msg;
 
-    if (typeof result === "string" && result.startsWith("http")) {
-      msg = {
-        type: "image",
-        originalContentUrl: result,
-        previewImageUrl: result
-      };
-    } else if (typeof result === "object" && result.type === "image") {
+    if (typeof result === "object" && result.type === "image") {
       msg = {
         type: "image",
         originalContentUrl: result.data,
@@ -298,7 +274,7 @@ app.post("/webhook", async (req, res) => {
     updateMemory(userId, text, result);
 
   } catch (err) {
-    console.log("WEBHOOK ERROR:", err.message);
+    logError("WEBHOOK", err);
   }
 });
 
@@ -306,5 +282,5 @@ app.post("/webhook", async (req, res) => {
    🚀 START
 ========================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 V46 IMAGE FIX RUNNING");
+  console.log("🚀 V45/V46 DEBUG STABLE AI RUNNING");
 });
