@@ -40,42 +40,34 @@ function isBlocked(text) {
 }
 
 // =========================
-// 📦 SIMPLE CACHE (10 phút)
-// =========================
-const cache = new Map();
-
-function getCache(key) {
-  const data = cache.get(key);
-  if (!data) return null;
-  if (Date.now() - data.time > 600000) return null;
-  return data.value;
-}
-
-function setCache(key, value) {
-  cache.set(key, { value, time: Date.now() });
-}
-
-// =========================
-// 🌐 WEB SEARCH (REALTIME)
+// 🌐 TAVILY REALTIME SEARCH
 // =========================
 async function webSearch(query) {
   try {
-    const res = await axios.get(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
+    const res = await axios.post(
+      "https://api.tavily.com/search",
+      {
+        api_key: process.env.TAVILY_KEY,
+        query: query,
+        search_depth: "advanced",
+        include_answer: true,
+        max_results: 3
+      }
     );
 
     return (
-      res.data.AbstractText ||
-      res.data.RelatedTopics?.[0]?.Text ||
+      res.data.answer ||
+      res.data.results?.map(r => r.content).join("\n") ||
       ""
     );
-  } catch {
+  } catch (err) {
+    console.log("Tavily error:", err.message);
     return "";
   }
 }
 
 // =========================
-// ⚡ GROQ (FAST AI)
+// ⚡ GROQ AI (FAST)
 // =========================
 async function groqAI(message) {
   const res = await axios.post(
@@ -96,7 +88,7 @@ async function groqAI(message) {
 }
 
 // =========================
-// 🧠 OPENROUTER (DEEP AI)
+// 🧠 OPENROUTER AI (DEEP + REALTIME)
 // =========================
 async function openrouterAI(message, context) {
   const res = await axios.post(
@@ -106,7 +98,14 @@ async function openrouterAI(message, context) {
       messages: [
         {
           role: "system",
-          content: `Bạn là AI realtime. Chỉ dùng dữ liệu sau:\n${context}`
+          content: `
+Bạn là AI realtime 2026.
+Chỉ dùng dữ liệu dưới đây, KHÔNG dùng kiến thức cũ:
+
+===== REALTIME DATA =====
+${context}
+=========================
+          `
         },
         {
           role: "user",
@@ -126,60 +125,25 @@ async function openrouterAI(message, context) {
 }
 
 // =========================
-// 🧠 INTENT DETECTION
-// =========================
-function detectIntent(text) {
-  const t = text.toLowerCase();
-
-  if (t.includes("tin") || t.includes("news") || t.includes("hôm nay"))
-    return "NEWS";
-
-  if (t.includes("code") || t.includes("bug") || t.includes("error"))
-    return "TECH";
-
-  if (t.length < 80)
-    return "FAST";
-
-  return "DEEP";
-}
-
-// =========================
-// 🤖 AI ROUTER
+// 🤖 AI ENGINE (V64 ROUTER)
 // =========================
 async function AI_ENGINE(message) {
 
-  const cached = getCache(message);
-  if (cached) return cached;
-
-  const intent = detectIntent(message);
-
-  let reply = "";
-
   const liveData = await webSearch(message);
 
-  if (intent === "NEWS") {
-    reply = "🌐 Realtime:\n" + liveData;
-  }
-
-  else if (intent === "FAST") {
+  // ⚡ câu ngắn → Groq
+  if (message.length < 120) {
     try {
-      reply = await groqAI(message);
-    } catch {
-      reply = await openrouterAI(message, liveData);
-    }
+      return await groqAI(message);
+    } catch {}
   }
 
-  else {
-    reply = await openrouterAI(message, liveData);
-  }
-
-  setCache(message, reply);
-
-  return reply;
+  // 🧠 câu dài / phức → OpenRouter + realtime
+  return await openrouterAI(message, liveData);
 }
 
 // =========================
-// 🔥 HANDLE MESSAGE
+// 🔥 HANDLE MESSAGE (SILENT BLOCK)
 // =========================
 async function handleMessage(text) {
 
@@ -202,6 +166,7 @@ app.post("/webhook", async (req, res) => {
 
     const reply = await handleMessage(text);
 
+    // 🚫 nếu bị block → im lặng
     if (!reply) continue;
 
     await client.replyMessage(event.replyToken, {
@@ -218,5 +183,5 @@ app.post("/webhook", async (req, res) => {
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V63 AI SUPER SYSTEM RUNNING");
+  console.log("🚀 V64 REALTIME AI RUNNING");
 });
