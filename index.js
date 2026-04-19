@@ -1,23 +1,24 @@
 
-// =========================
-// 📦 IMPORTS
-// =========================
 const express = require("express");
 const axios = require("axios");
+const line = require("@line/bot-sdk");
 
 const app = express();
 app.use(express.json());
 
 // =========================
-// 🔐 LINE CONFIG
+// 🔐 LINE CONFIG (FIXED)
 // =========================
-const line = require("@line/bot-sdk");
-
 const config = {
-  channelSecret: process.env.CHANNEL_SECRET,
-  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN
+  channelAccessToken: process.env.LINE_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 
+// 👉 CHECK ENV (DEBUG)
+console.log("TOKEN:", process.env.LINE_ACCESS_TOKEN);
+console.log("SECRET:", process.env.LINE_CHANNEL_SECRET);
+
+// 👉 CREATE CLIENT
 const client = new line.Client(config);
 
 // =========================
@@ -44,104 +45,48 @@ function isBlocked(text) {
 }
 
 // =========================
-// 🌐 1. DUCKDUCKGO (SEARCH REALTIME)
+// 🤖 SIMPLE AI (OPENROUTER EXAMPLE)
 // =========================
-async function duckduckgoAI(query) {
-  const res = await axios.get(
-    `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
-  );
-
-  return res.data.AbstractText || res.data.RelatedTopics?.[0]?.Text || null;
-}
-
-// =========================
-// ⚡ 2. GROQ AI (FAST REASONING)
-// =========================
-async function groqAI(message) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama3-70b-8192",
-      messages: [{ role: "user", content: message }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_KEY}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// =========================
-// 🧠 3. OPENROUTER AI (FALLBACK DEEP AI)
-// =========================
-async function openrouterAI(message) {
-  const res = await axios.post(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      model: "openai/gpt-4o-mini",
-      messages: [{ role: "user", content: message }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_KEY}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-
-  return res.data.choices[0].message.content;
-}
-
-// =========================
-// 🤖 AI ROUTER (CHIA NHIỆM VỤ)
-// =========================
-async function AI_ENGINE(message) {
+async function askAI(text) {
   try {
-
-    // 1. DUCKDUCKGO → TIN TỨC / DỮ LIỆU MỚI
-    if (message.includes("TIN") || message.includes("NEWS") || message.includes("WHAT")) {
-      const ddg = await duckduckgoAI(message);
-      if (ddg) return "🌐 DuckDuckGo:\n" + ddg;
-    }
-
-    // 2. GROQ → LOGIC / CHAT NHANH
-    if (message.length < 200) {
-      try {
-        return await groqAI(message);
-      } catch (e) {
-        console.log("Groq fail → fallback");
+    const res = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "openai/gpt-4o-mini",
+        messages: [{ role: "user", content: text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
-    }
+    );
 
-    // 3. OPENROUTER → AI MẠNH (FALLBACK CUỐI)
-    return await openrouterAI(message);
+    return res.data.choices[0].message.content;
 
   } catch (err) {
-    console.log("ALL AI FAILED:", err.message);
-    return "⚠️ AI đang quá tải, thử lại sau.";
+    console.log("AI ERROR:", err.response?.data || err.message);
+    return "AI đang lỗi, thử lại sau.";
   }
 }
 
 // =========================
-// 🔥 MAIN HANDLER
+// 🔥 HANDLE MESSAGE
 // =========================
 async function handleMessage(text) {
 
-  // 🚫 BLOCK
+  // 🚫 BLOCK CHECK
   if (isBlocked(text)) {
     return "⛔ Nội dung bị chặn";
   }
 
-  // 🤖 AI PROCESS
-  return await AI_ENGINE(text);
+  // 🤖 AI RESPONSE
+  return await askAI(text);
 }
 
 // =========================
-// 🌐 WEBHOOK LINE
+// 🌐 LINE WEBHOOK
 // =========================
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
@@ -163,9 +108,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 // =========================
-// 🚀 SERVER START
+// 🚀 START SERVER
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V60 BOT RUNNING ON PORT", PORT);
+  console.log("🚀 BOT RUNNING ON PORT", PORT);
 });
