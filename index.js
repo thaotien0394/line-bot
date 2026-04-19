@@ -7,22 +7,17 @@ const app = express();
 app.use(express.json());
 
 // =========================
-// 🔐 LINE CONFIG (FIXED)
+// 🔐 LINE CONFIG
 // =========================
 const config = {
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 
-// 👉 CHECK ENV (DEBUG)
-console.log("TOKEN:", process.env.LINE_ACCESS_TOKEN);
-console.log("SECRET:", process.env.LINE_CHANNEL_SECRET);
-
-// 👉 CREATE CLIENT
 const client = new line.Client(config);
 
 // =========================
-// 🚫 BLOCKLIST
+// 🚫 BLOCKLIST (SILENT)
 // =========================
 const BLOCKLIST = new Set([
   "KEY","RS","CTKM","MT","HD","BOT",
@@ -45,30 +40,142 @@ function isBlocked(text) {
 }
 
 // =========================
-// 🤖 SIMPLE AI (OPENROUTER EXAMPLE)
+// 📦 SIMPLE CACHE (10 phút)
 // =========================
-async function askAI(text) {
+const cache = new Map();
+
+function getCache(key) {
+  const data = cache.get(key);
+  if (!data) return null;
+  if (Date.now() - data.time > 600000) return null;
+  return data.value;
+}
+
+function setCache(key, value) {
+  cache.set(key, { value, time: Date.now() });
+}
+
+// =========================
+// 🌐 WEB SEARCH (REALTIME)
+// =========================
+async function webSearch(query) {
   try {
-    const res = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-4o-mini",
-        messages: [{ role: "user", content: text }]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
+    const res = await axios.get(
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
     );
 
-    return res.data.choices[0].message.content;
-
-  } catch (err) {
-    console.log("AI ERROR:", err.response?.data || err.message);
-    return "AI đang lỗi, thử lại sau.";
+    return (
+      res.data.AbstractText ||
+      res.data.RelatedTopics?.[0]?.Text ||
+      ""
+    );
+  } catch {
+    return "";
   }
+}
+
+// =========================
+// ⚡ GROQ (FAST AI)
+// =========================
+async function groqAI(message) {
+  const res = await axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      model: "llama3-70b-8192",
+      messages: [{ role: "user", content: message }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_KEY}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  return res.data.choices[0].message.content;
+}
+
+// =========================
+// 🧠 OPENROUTER (DEEP AI)
+// =========================
+async function openrouterAI(message, context) {
+  const res = await axios.post(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      model: "openai/gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Bạn là AI realtime. Chỉ dùng dữ liệu sau:\n${context}`
+        },
+        {
+          role: "user",
+          content: message
+        }
+      ]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_KEY}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  return res.data.choices[0].message.content;
+}
+
+// =========================
+// 🧠 INTENT DETECTION
+// =========================
+function detectIntent(text) {
+  const t = text.toLowerCase();
+
+  if (t.includes("tin") || t.includes("news") || t.includes("hôm nay"))
+    return "NEWS";
+
+  if (t.includes("code") || t.includes("bug") || t.includes("error"))
+    return "TECH";
+
+  if (t.length < 80)
+    return "FAST";
+
+  return "DEEP";
+}
+
+// =========================
+// 🤖 AI ROUTER
+// =========================
+async function AI_ENGINE(message) {
+
+  const cached = getCache(message);
+  if (cached) return cached;
+
+  const intent = detectIntent(message);
+
+  let reply = "";
+
+  const liveData = await webSearch(message);
+
+  if (intent === "NEWS") {
+    reply = "🌐 Realtime:\n" + liveData;
+  }
+
+  else if (intent === "FAST") {
+    try {
+      reply = await groqAI(message);
+    } catch {
+      reply = await openrouterAI(message, liveData);
+    }
+  }
+
+  else {
+    reply = await openrouterAI(message, liveData);
+  }
+
+  setCache(message, reply);
+
+  return reply;
 }
 
 // =========================
@@ -76,13 +183,10 @@ async function askAI(text) {
 // =========================
 async function handleMessage(text) {
 
-  // 🚫 BLOCK CHECK
-  if (isBlocked(text)) {
-    return "⛔ Nội dung bị chặn";
-  }
+  // 🚫 SILENT BLOCK
+  if (isBlocked(text)) return null;
 
-  // 🤖 AI RESPONSE
-  return await askAI(text);
+  return await AI_ENGINE(text);
 }
 
 // =========================
@@ -94,9 +198,11 @@ app.post("/webhook", async (req, res) => {
   for (let event of events) {
     if (event.type !== "message") continue;
 
-    const userText = event.message.text;
+    const text = event.message.text;
 
-    const reply = await handleMessage(userText);
+    const reply = await handleMessage(text);
+
+    if (!reply) continue;
 
     await client.replyMessage(event.replyToken, {
       type: "text",
@@ -112,5 +218,5 @@ app.post("/webhook", async (req, res) => {
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 BOT RUNNING ON PORT", PORT);
+  console.log("🚀 V63 AI SUPER SYSTEM RUNNING");
 });
