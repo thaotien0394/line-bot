@@ -17,7 +17,7 @@ const config = {
 const client = new line.Client(config);
 
 // =========================
-// 🚫 BLOCKLIST (SILENT)
+// 🚫 BLOCKLIST SILENT
 // =========================
 const BLOCKLIST = new Set([
   "KEY","RS","CTKM","MT","HD","BOT",
@@ -25,51 +25,57 @@ const BLOCKLIST = new Set([
   "TRACHAM","BB","CAMERA"
 ]);
 
-function normalize(text) {
-  return text
-    .toString()
-    .normalize("NFC")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, " ");
-}
-
 function isBlocked(text) {
-  return BLOCKLIST.has(normalize(text));
+  return BLOCKLIST.has(text.toUpperCase().trim());
 }
 
 // =========================
-// 🧹 LINE TEXT FIX
+// 🧹 CLEAN LINE TEXT
 // =========================
-function cleanText(text) {
+function clean(text) {
   return text
     .toString()
     .normalize("NFC")
     .replace(/`/g, "")
     .replace(/\*\*/g, "")
-    .replace(/#{1,6}\s?/g, "")
     .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
     .trim();
 }
 
 // =========================
-// 📦 CACHE (10 phút)
+// ⚡ DETECT REALTIME NEED
 // =========================
-const cache = new Map();
+function isRealtimeQuery(text) {
+  const t = text.toLowerCase();
 
-function getCache(key) {
-  const data = cache.get(key);
-  if (!data) return null;
-  if (Date.now() - data.time > 600000) return null;
-  return data.value;
+  return (
+    t.includes("hôm nay") ||
+    t.includes("mới nhất") ||
+    t.includes("hiện tại") ||
+    t.includes("giá") ||
+    t.includes("tin") ||
+    t.includes("update") ||
+    t.includes("2026") ||
+    t.includes("now")
+  );
 }
 
-function setCache(key, value) {
-  cache.set(key, { value, time: Date.now() });
+// =========================
+// 🧠 INTENT ENGINE
+// =========================
+function detectIntent(text) {
+  const t = text.toLowerCase();
+
+  if (t.includes("so sánh")) return "COMPARE";
+  if (t.includes("vẽ") || t.includes("image")) return "IMAGE";
+  if (t.includes("video")) return "VIDEO";
+  if (t.includes("tin")) return "NEWS";
+
+  return "CHAT";
 }
 
 // =========================
-// 🌐 TAVILY REALTIME SEARCH
+// 🌐 TAVILY REALTIME SEARCH (FAST FIX)
 // =========================
 async function webSearch(query) {
   try {
@@ -88,7 +94,7 @@ async function webSearch(query) {
 }
 
 // =========================
-// 📰 NEWSDATA
+// 📰 NEWS REALTIME (NEWSDATA)
 // =========================
 async function getNews(query) {
   try {
@@ -97,7 +103,7 @@ async function getNews(query) {
     );
 
     return res.data.results?.slice(0, 3)
-      .map(n => `${n.title}`)
+      .map(n => `• ${n.title}`)
       .join("\n") || "";
   } catch {
     return "";
@@ -105,7 +111,7 @@ async function getNews(query) {
 }
 
 // =========================
-// 🎨 STABILITY AI (IMAGE)
+// 🎨 IMAGE AI (STABILITY - FAST QUEUE FIX)
 // =========================
 async function generateImage(prompt) {
   try {
@@ -114,7 +120,7 @@ async function generateImage(prompt) {
       {
         text_prompts: [{ text: prompt }],
         cfg_scale: 7,
-        steps: 30
+        steps: 25
       },
       {
         headers: {
@@ -124,14 +130,38 @@ async function generateImage(prompt) {
       }
     );
 
-    return res.data;
+    return "🎨 Ảnh đã tạo xong (Stable Diffusion)";
   } catch {
-    return null;
+    return "⚠️ Không tạo được ảnh (API lỗi)";
   }
 }
 
 // =========================
-// ⚡ GROQ (FAST AI)
+// 🎬 VIDEO AI (REPLICATE FAST MODE)
+// =========================
+async function generateVideo(prompt) {
+  try {
+    const res = await axios.post(
+      "https://api.replicate.com/v1/predictions",
+      {
+        version: "latest",
+        input: { prompt }
+      },
+      {
+        headers: {
+          Authorization: `Token ${process.env.REPLICATE_KEY}`
+        }
+      }
+    );
+
+    return "🎬 Video đang xử lý (Replicate)";
+  } catch {
+    return "⚠️ Video không khả dụng";
+  }
+}
+
+// =========================
+// ⚡ GROQ FAST AI
 // =========================
 async function groqAI(message) {
   const res = await axios.post(
@@ -142,8 +172,7 @@ async function groqAI(message) {
     },
     {
       headers: {
-        Authorization: `Bearer ${process.env.GROQ_KEY}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${process.env.GROQ_KEY}`
       }
     }
   );
@@ -152,7 +181,7 @@ async function groqAI(message) {
 }
 
 // =========================
-// 🧠 OPENROUTER (DEEP AI)
+// 🧠 OPENROUTER DEEP AI
 // =========================
 async function openrouterAI(message, context) {
   const res = await axios.post(
@@ -163,12 +192,12 @@ async function openrouterAI(message, context) {
         {
           role: "system",
           content: `
-AI ULTRA 2026.
+AI V70 SYSTEM
 
 QUY TẮC:
-- chỉ dùng dữ liệu realtime
-- không bịa
-- trả lời đúng ngữ cảnh
+- logic rõ ràng
+- không lan man
+- ưu tiên dữ liệu realtime
 
 DATA:
 ${context}
@@ -179,8 +208,7 @@ ${context}
     },
     {
       headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_KEY}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${process.env.OPENROUTER_KEY}`
       }
     }
   );
@@ -189,64 +217,54 @@ ${context}
 }
 
 // =========================
-// 🧠 INTENT ENGINE
-// =========================
-function detectIntent(text) {
-  const t = text.toLowerCase();
-
-  if (t.includes("tin")) return "NEWS";
-  if (t.includes("vẽ")) return "IMAGE";
-  if (t.includes("so sánh")) return "COMPARE";
-  if (t.includes("giá")) return "PRICE";
-
-  return "CHAT";
-}
-
-// =========================
-// 🤖 AI ROUTER CORE
+// 🧠 AI ENGINE (V70 CORE)
 // =========================
 async function AI_ENGINE(message) {
 
-  const cached = getCache(message);
-  if (cached) return cached;
-
   const intent = detectIntent(message);
+  const realtime = isRealtimeQuery(message);
 
-  // 📰 NEWS MODE
+  let context = "";
+
+  // 🌐 realtime forced search
+  if (realtime) {
+    context = await webSearch(message);
+  }
+
+  // 📰 NEWS
   if (intent === "NEWS") {
     const news = await getNews(message);
-    return cleanText(news);
+    return clean(`📊 TIN MỚI NHẤT:\n${news}`);
   }
 
-  // 🎨 IMAGE MODE
+  // 🎨 IMAGE FAST FIX
   if (intent === "IMAGE") {
-    await generateImage(message);
-    return "🎨 Đã tạo hình ảnh xong";
+    return await generateImage(message);
   }
 
-  // 🌐 REALTIME SEARCH
-  const liveData = await webSearch(message);
+  // 🎬 VIDEO FAST FIX
+  if (intent === "VIDEO") {
+    return await generateVideo(message);
+  }
 
-  let result;
-
-  // ⚡ FAST
-  if (message.length < 100) {
+  // ⚡ FAST MODE
+  if (message.length < 120) {
     try {
-      result = await groqAI(message);
-    } catch {
-      result = await openrouterAI(message, liveData);
-    }
-  } else {
-    result = await openrouterAI(message, liveData);
+      return clean(await groqAI(message));
+    } catch {}
   }
 
-  setCache(message, result);
-
-  return cleanText(result);
+  // 🧠 DEEP MODE
+  try {
+    const res = await openrouterAI(message, context);
+    return clean(res);
+  } catch {
+    return clean("⚠️ AI đang bảo trì, thử lại sau");
+  }
 }
 
 // =========================
-// 🚫 SILENT BLOCK HANDLER
+// 🚫 BLOCK HANDLER
 // =========================
 async function handleMessage(text) {
   if (isBlocked(text)) return null;
@@ -270,7 +288,7 @@ app.post("/webhook", async (req, res) => {
 
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: cleanText(reply)
+      text: clean(reply)
     });
   }
 
@@ -282,5 +300,5 @@ app.post("/webhook", async (req, res) => {
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V66 ULTRA AI PLATFORM RUNNING");
+  console.log("🚀 THẢO THẢO PRO ");
 });
