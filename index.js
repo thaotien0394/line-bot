@@ -28,11 +28,10 @@ const BLOCKLIST = new Set([
 function normalize(text) {
   return text
     .toString()
+    .normalize("NFC")
     .trim()
     .toUpperCase()
-    .replace(/\s+/g, " ")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replace(/\s+/g, " ");
 }
 
 function isBlocked(text) {
@@ -40,34 +39,99 @@ function isBlocked(text) {
 }
 
 // =========================
+// 🧹 LINE TEXT FIX
+// =========================
+function cleanText(text) {
+  return text
+    .toString()
+    .normalize("NFC")
+    .replace(/`/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/#{1,6}\s?/g, "")
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
+    .trim();
+}
+
+// =========================
+// 📦 CACHE (10 phút)
+// =========================
+const cache = new Map();
+
+function getCache(key) {
+  const data = cache.get(key);
+  if (!data) return null;
+  if (Date.now() - data.time > 600000) return null;
+  return data.value;
+}
+
+function setCache(key, value) {
+  cache.set(key, { value, time: Date.now() });
+}
+
+// =========================
 // 🌐 TAVILY REALTIME SEARCH
 // =========================
 async function webSearch(query) {
   try {
-    const res = await axios.post(
-      "https://api.tavily.com/search",
-      {
-        api_key: process.env.TAVILY_KEY,
-        query: query,
-        search_depth: "advanced",
-        include_answer: true,
-        max_results: 3
-      }
-    );
+    const res = await axios.post("https://api.tavily.com/search", {
+      api_key: process.env.TAVILY_KEY,
+      query,
+      search_depth: "advanced",
+      include_answer: true,
+      max_results: 3
+    });
 
-    return (
-      res.data.answer ||
-      res.data.results?.map(r => r.content).join("\n") ||
-      ""
-    );
-  } catch (err) {
-    console.log("Tavily error:", err.message);
+    return res.data.answer || "";
+  } catch {
     return "";
   }
 }
 
 // =========================
-// ⚡ GROQ AI (FAST)
+// 📰 NEWSDATA
+// =========================
+async function getNews(query) {
+  try {
+    const res = await axios.get(
+      `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&q=${query}&language=vi`
+    );
+
+    return res.data.results?.slice(0, 3)
+      .map(n => `${n.title}`)
+      .join("\n") || "";
+  } catch {
+    return "";
+  }
+}
+
+// =========================
+// 🎨 STABILITY AI (IMAGE)
+// =========================
+async function generateImage(prompt) {
+  try {
+    const res = await axios.post(
+      "https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image",
+      {
+        text_prompts: [{ text: prompt }],
+        cfg_scale: 7,
+        steps: 30
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.STABILITY_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    return res.data;
+  } catch {
+    return null;
+  }
+}
+
+// =========================
+// ⚡ GROQ (FAST AI)
 // =========================
 async function groqAI(message) {
   const res = await axios.post(
@@ -88,7 +152,7 @@ async function groqAI(message) {
 }
 
 // =========================
-// 🧠 OPENROUTER AI (DEEP + REALTIME)
+// 🧠 OPENROUTER (DEEP AI)
 // =========================
 async function openrouterAI(message, context) {
   const res = await axios.post(
@@ -99,18 +163,18 @@ async function openrouterAI(message, context) {
         {
           role: "system",
           content: `
-Bạn là AI realtime 2026.
-Chỉ dùng dữ liệu dưới đây, KHÔNG dùng kiến thức cũ:
+AI ULTRA 2026.
 
-===== REALTIME DATA =====
+QUY TẮC:
+- chỉ dùng dữ liệu realtime
+- không bịa
+- trả lời đúng ngữ cảnh
+
+DATA:
 ${context}
-=========================
           `
         },
-        {
-          role: "user",
-          content: message
-        }
+        { role: "user", content: message }
       ]
     },
     {
@@ -125,31 +189,67 @@ ${context}
 }
 
 // =========================
-// 🤖 AI ENGINE (V64 ROUTER)
+// 🧠 INTENT ENGINE
 // =========================
-async function AI_ENGINE(message) {
+function detectIntent(text) {
+  const t = text.toLowerCase();
 
-  const liveData = await webSearch(message);
+  if (t.includes("tin")) return "NEWS";
+  if (t.includes("vẽ")) return "IMAGE";
+  if (t.includes("so sánh")) return "COMPARE";
+  if (t.includes("giá")) return "PRICE";
 
-  // ⚡ câu ngắn → Groq
-  if (message.length < 120) {
-    try {
-      return await groqAI(message);
-    } catch {}
-  }
-
-  // 🧠 câu dài / phức → OpenRouter + realtime
-  return await openrouterAI(message, liveData);
+  return "CHAT";
 }
 
 // =========================
-// 🔥 HANDLE MESSAGE (SILENT BLOCK)
+// 🤖 AI ROUTER CORE
+// =========================
+async function AI_ENGINE(message) {
+
+  const cached = getCache(message);
+  if (cached) return cached;
+
+  const intent = detectIntent(message);
+
+  // 📰 NEWS MODE
+  if (intent === "NEWS") {
+    const news = await getNews(message);
+    return cleanText(news);
+  }
+
+  // 🎨 IMAGE MODE
+  if (intent === "IMAGE") {
+    await generateImage(message);
+    return "🎨 Đã tạo hình ảnh xong";
+  }
+
+  // 🌐 REALTIME SEARCH
+  const liveData = await webSearch(message);
+
+  let result;
+
+  // ⚡ FAST
+  if (message.length < 100) {
+    try {
+      result = await groqAI(message);
+    } catch {
+      result = await openrouterAI(message, liveData);
+    }
+  } else {
+    result = await openrouterAI(message, liveData);
+  }
+
+  setCache(message, result);
+
+  return cleanText(result);
+}
+
+// =========================
+// 🚫 SILENT BLOCK HANDLER
 // =========================
 async function handleMessage(text) {
-
-  // 🚫 SILENT BLOCK
   if (isBlocked(text)) return null;
-
   return await AI_ENGINE(text);
 }
 
@@ -166,12 +266,11 @@ app.post("/webhook", async (req, res) => {
 
     const reply = await handleMessage(text);
 
-    // 🚫 nếu bị block → im lặng
     if (!reply) continue;
 
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: reply
+      text: cleanText(reply)
     });
   }
 
@@ -183,5 +282,5 @@ app.post("/webhook", async (req, res) => {
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 V64 REALTIME AI RUNNING");
+  console.log("🚀 V66 ULTRA AI PLATFORM RUNNING");
 });
