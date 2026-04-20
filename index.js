@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 const express = require("express");
 const axios = require("axios");
 const line = require("@line/bot-sdk");
@@ -9,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 // =========================
-// 🔐 CONFIG
+// 🔐 CONFIG (LẤY TỪ VARIABLES)
 // =========================
 const config = {
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
@@ -17,6 +15,8 @@ const config = {
 };
 
 const client = new line.Client(config);
+
+// ⚠️ REDIS URL từ Variables
 const redis = new Redis(process.env.REDIS_URL);
 
 // =========================
@@ -69,8 +69,7 @@ async function webSearch(query) {
   try {
     const res = await axios.post("https://api.tavily.com/search", {
       api_key: process.env.TAVILY_KEY,
-      query,
-      search_depth: "basic"
+      query
     });
 
     return res.data.results?.map(r => r.content).join("\n") || "";
@@ -122,7 +121,7 @@ async function executeTool(name, arg) {
 }
 
 // =========================
-// 🤖 CALL AI (OpenRouter)
+// 🤖 CALL AI
 // =========================
 async function callAI(messages) {
   try {
@@ -253,6 +252,16 @@ app.post("/webhook", async (req, res) => {
 // 🚀 START
 // =========================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+
+app.listen(PORT, async () => {
   console.log("🚀 V100 AGENT RUNNING");
+
+  // 🔥 test Redis ngay khi start
+  try {
+    await redis.set("ping", "ok");
+    const v = await redis.get("ping");
+    console.log("REDIS:", v);
+  } catch (e) {
+    console.log("❌ REDIS ERROR:", e.message);
+  }
 });
