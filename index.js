@@ -1,13 +1,15 @@
+require("dotenv").config();
 
 const express = require("express");
 const axios = require("axios");
 const line = require("@line/bot-sdk");
+const Redis = require("ioredis");
 
 const app = express();
 app.use(express.json());
 
 // =========================
-// 🔐 LINE CONFIG
+// 🔐 CONFIG
 // =========================
 const config = {
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
@@ -15,86 +17,70 @@ const config = {
 };
 
 const client = new line.Client(config);
+const redis = new Redis(process.env.REDIS_URL);
 
 // =========================
-// 🚫 BLOCKLIST SILENT
+// 🚫 BLOCKLIST
 // =========================
-const BLOCKLIST = new Set([
-  "KEY","RS","CTKM","MT","HD","BOT",
-  "LAPTOP","MÙA NÓNG","PV","8NTTT",
-  "TRACHAM","BB","CAMERA"
-]);
+const BLOCKLIST = new Set(["KEY","RS","CTKM","MT","HD"]);
 
 function isBlocked(text) {
   return BLOCKLIST.has(text.toUpperCase().trim());
 }
 
 // =========================
-// 🧹 CLEAN LINE TEXT
+// 🧹 CLEAN TEXT
 // =========================
 function clean(text) {
   return text
     .toString()
-    .normalize("NFC")
-    .replace(/`/g, "")
-    .replace(/\*\*/g, "")
+    .replace(/[`*]/g, "")
     .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
     .trim();
 }
 
 // =========================
-// ⚡ DETECT REALTIME NEED
+// 🧠 MEMORY (REDIS)
 // =========================
-function isRealtimeQuery(text) {
-  const t = text.toLowerCase();
+async function getMemory(userId) {
+  const data = await redis.get(`mem:${userId}`);
+  return data ? JSON.parse(data) : [];
+}
 
-  return (
-    t.includes("hôm nay") ||
-    t.includes("mới nhất") ||
-    t.includes("hiện tại") ||
-    t.includes("giá") ||
-    t.includes("tin") ||
-    t.includes("update") ||
-    t.includes("2026") ||
-    t.includes("now")
-  );
+async function saveMemory(userId, memory) {
+  await redis.set(`mem:${userId}`, JSON.stringify(memory.slice(-10)));
 }
 
 // =========================
-// 🧠 INTENT ENGINE
+// ⚡ CACHE
 // =========================
-function detectIntent(text) {
-  const t = text.toLowerCase();
+async function getCache(key) {
+  return await redis.get(`cache:${key}`);
+}
 
-  if (t.includes("so sánh")) return "COMPARE";
-  if (t.includes("vẽ") || t.includes("image")) return "IMAGE";
-  if (t.includes("video")) return "VIDEO";
-  if (t.includes("tin")) return "NEWS";
-
-  return "CHAT";
+async function setCache(key, value) {
+  await redis.set(`cache:${key}`, value, "EX", 120);
 }
 
 // =========================
-// 🌐 TAVILY REALTIME SEARCH (FAST FIX)
+// 🌐 REALTIME SEARCH
 // =========================
 async function webSearch(query) {
   try {
     const res = await axios.post("https://api.tavily.com/search", {
       api_key: process.env.TAVILY_KEY,
       query,
-      search_depth: "advanced",
-      include_answer: true,
-      max_results: 3
+      search_depth: "basic"
     });
 
-    return res.data.answer || "";
+    return res.data.results?.map(r => r.content).join("\n") || "";
   } catch {
     return "";
   }
 }
 
 // =========================
-// 📰 NEWS REALTIME (NEWSDATA)
+// 📰 NEWS
 // =========================
 async function getNews(query) {
   try {
@@ -111,180 +97,148 @@ async function getNews(query) {
 }
 
 // =========================
-// 🎨 IMAGE AI (STABILITY - FAST QUEUE FIX)
+// 🎨 IMAGE
 // =========================
 async function generateImage(prompt) {
-  try {
-    const res = await axios.post(
-      "https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image",
-      {
-        text_prompts: [{ text: prompt }],
-        cfg_scale: 7,
-        steps: 25
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.STABILITY_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    return "🎨 Ảnh đã tạo xong (Stable Diffusion)";
-  } catch {
-    return "⚠️ Không tạo được ảnh (API lỗi)";
-  }
+  return "🎨 Đã tạo ảnh (demo)";
 }
 
 // =========================
-// 🎬 VIDEO AI (REPLICATE FAST MODE)
+// 🎬 VIDEO
 // =========================
 async function generateVideo(prompt) {
+  return "🎬 Đang tạo video (demo)";
+}
+
+// =========================
+// 🔧 TOOL EXECUTOR
+// =========================
+async function executeTool(name, arg) {
+  if (name === "search") return await webSearch(arg);
+  if (name === "news") return await getNews(arg);
+  if (name === "image") return await generateImage(arg);
+  if (name === "video") return await generateVideo(arg);
+  return "";
+}
+
+// =========================
+// 🤖 CALL AI (OpenRouter)
+// =========================
+async function callAI(messages) {
   try {
     const res = await axios.post(
-      "https://api.replicate.com/v1/predictions",
+      "https://openrouter.ai/api/v1/chat/completions",
       {
-        version: "latest",
-        input: { prompt }
+        model: "openai/gpt-4o-mini",
+        messages
       },
       {
         headers: {
-          Authorization: `Token ${process.env.REPLICATE_KEY}`
+          Authorization: `Bearer ${process.env.OPENROUTER_KEY}`
         }
       }
     );
 
-    return "🎬 Video đang xử lý (Replicate)";
+    return res.data.choices[0].message.content;
   } catch {
-    return "⚠️ Video không khả dụng";
+    return null;
   }
 }
 
 // =========================
-// ⚡ GROQ FAST AI
+// 🤖 AGENT LOOP V100
 // =========================
-async function groqAI(message) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama3-70b-8192",
-      messages: [{ role: "user", content: message }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_KEY}`
+async function runAgent(userId, message) {
+
+  let memory = await getMemory(userId);
+  memory.push({ role: "user", content: message });
+
+  let toolResult = "";
+  let loop = 0;
+
+  while (loop < 3) {
+
+    const reply = await callAI([
+      {
+        role: "system",
+        content: `
+Bạn là AI Agent
+
+Nếu cần dữ liệu:
+TOOL: search(từ khóa)
+
+Nếu đủ thông tin → trả lời luôn
+        `
+      },
+      ...memory,
+      ...(toolResult
+        ? [{ role: "system", content: "TOOL RESULT:\n" + toolResult }]
+        : [])
+    ]);
+
+    if (!reply) return "⚠️ AI lỗi";
+
+    // 🔧 detect tool
+    if (reply.includes("TOOL:")) {
+      const match = reply.match(/TOOL:\s*(\w+)\((.*?)\)/);
+
+      if (match) {
+        const toolName = match[1];
+        const arg = match[2];
+
+        toolResult = await executeTool(toolName, arg);
+
+        memory.push({
+          role: "assistant",
+          content: `Đã gọi tool ${toolName}`
+        });
+
+        loop++;
+        continue;
       }
     }
-  );
 
-  return res.data.choices[0].message.content;
+    // ✅ trả lời cuối
+    memory.push({ role: "assistant", content: reply });
+    await saveMemory(userId, memory);
+
+    return reply;
+  }
+
+  return "⚠️ Quá nhiều bước";
 }
 
 // =========================
-// 🧠 OPENROUTER DEEP AI
+// 🧠 AI ENGINE
 // =========================
-async function openrouterAI(message, context) {
-  const res = await axios.post(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      model: "openai/gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-AI V70 SYSTEM
+async function AI_ENGINE(userId, message) {
 
-QUY TẮC:
-- logic rõ ràng
-- không lan man
-- ưu tiên dữ liệu realtime
+  const cache = await getCache(message);
+  if (cache) return cache;
 
-DATA:
-${context}
-          `
-        },
-        { role: "user", content: message }
-      ]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_KEY}`
-      }
-    }
-  );
+  const reply = await runAgent(userId, message);
 
-  return res.data.choices[0].message.content;
-}
+  await setCache(message, reply);
 
-// =========================
-// 🧠 AI ENGINE (V70 CORE)
-// =========================
-async function AI_ENGINE(message) {
-
-  const intent = detectIntent(message);
-  const realtime = isRealtimeQuery(message);
-
-  let context = "";
-
-  // 🌐 realtime forced search
-  if (realtime) {
-    context = await webSearch(message);
-  }
-
-  // 📰 NEWS
-  if (intent === "NEWS") {
-    const news = await getNews(message);
-    return clean(`📊 TIN MỚI NHẤT:\n${news}`);
-  }
-
-  // 🎨 IMAGE FAST FIX
-  if (intent === "IMAGE") {
-    return await generateImage(message);
-  }
-
-  // 🎬 VIDEO FAST FIX
-  if (intent === "VIDEO") {
-    return await generateVideo(message);
-  }
-
-  // ⚡ FAST MODE
-  if (message.length < 120) {
-    try {
-      return clean(await groqAI(message));
-    } catch {}
-  }
-
-  // 🧠 DEEP MODE
-  try {
-    const res = await openrouterAI(message, context);
-    return clean(res);
-  } catch {
-    return clean("⚠️ AI đang bảo trì, thử lại sau");
-  }
-}
-
-// =========================
-// 🚫 BLOCK HANDLER
-// =========================
-async function handleMessage(text) {
-  if (isBlocked(text)) return null;
-  return await AI_ENGINE(text);
+  return reply;
 }
 
 // =========================
 // 🌐 LINE WEBHOOK
 // =========================
 app.post("/webhook", async (req, res) => {
+
   const events = req.body.events;
 
   for (let event of events) {
     if (event.type !== "message") continue;
 
+    const userId = event.source.userId;
     const text = event.message.text;
 
-    const reply = await handleMessage(text);
+    if (isBlocked(text)) continue;
 
-    if (!reply) continue;
+    const reply = await AI_ENGINE(userId, text);
 
     await client.replyMessage(event.replyToken, {
       type: "text",
@@ -296,9 +250,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 // =========================
-// 🚀 START SERVER
+// 🚀 START
 // =========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 THẢO THẢO PRO ");
+  console.log("🚀 V100 AGENT RUNNING");
 });
